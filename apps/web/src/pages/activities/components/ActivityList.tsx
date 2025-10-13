@@ -30,7 +30,7 @@ export function ActivityList({ data: userData, pagination = false, loading = fal
       />
       <div data-test-id="activities-table">
         {data.map((item) => {
-          return <ActivityItem onClick={onRowClick} key={`activity-item-${item.id}`} item={item} />;
+          return <ActivityItem onClick={onRowClick} key={`activity-item-${item._id}`} item={item} />;
         })}
       </div>
 
@@ -48,7 +48,6 @@ export function ActivityList({ data: userData, pagination = false, loading = fal
           <Button
             variant="outline"
             disabled={pagination?.current === 0 || loading}
-            // eslint-disable-next-line no-unsafe-optional-chaining
             onClick={() => onPageChange(pagination?.current - 1)}
           >
             <ChevronLeft />
@@ -56,7 +55,6 @@ export function ActivityList({ data: userData, pagination = false, loading = fal
           <Button
             variant="outline"
             disabled={!pagination?.hasMore || loading}
-            // eslint-disable-next-line no-unsafe-optional-chaining
             onClick={() => onPageChange(pagination?.current + 1)}
           >
             <ChevronRight />

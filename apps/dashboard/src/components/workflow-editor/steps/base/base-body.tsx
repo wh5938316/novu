@@ -1,54 +1,44 @@
-import { EditorView } from '@uiw/react-codemirror';
-import { useMemo } from 'react';
 import { useFormContext } from 'react-hook-form';
-
-import { Editor } from '@/components/primitives/editor';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/primitives/form/form';
-import { InputField } from '@/components/primitives/input';
+import { ControlInput } from '@/components/workflow-editor/control-input';
 import { useWorkflow } from '@/components/workflow-editor/workflow-provider';
-import { completions } from '@/utils/liquid-autocomplete';
-import { parseStepVariablesToLiquidVariables } from '@/utils/parseStepVariablesToLiquidVariables';
+import { useParseVariables } from '@/hooks/use-parse-variables';
 import { capitalize } from '@/utils/string';
-import { autocompletion } from '@codemirror/autocomplete';
+import { InputRoot } from '../../../primitives/input';
 
 const bodyKey = 'body';
 
-const basicSetup = {
-  defaultKeymap: true,
-};
-
 export const BaseBody = () => {
   const { control } = useFormContext();
-  const { step } = useWorkflow();
-  const variables = useMemo(() => (step ? parseStepVariablesToLiquidVariables(step.variables) : []), [step]);
-  const extensions = useMemo(
-    () => [autocompletion({ override: [completions(variables)] }), EditorView.lineWrapping],
-    [variables]
-  );
+  const { step, digestStepBeforeCurrent, workflow } = useWorkflow();
+  const { variables, isAllowedVariable } = useParseVariables(step?.variables, digestStepBeforeCurrent?.stepId);
+
+  const hintMessage = workflow?.isTranslationEnabled
+    ? 'Type {{ to access variables or {t. to access translation keys.'
+    : 'Type {{ to access variables.';
 
   return (
     <FormField
       control={control}
       name={bodyKey}
-      render={({ field }) => (
+      render={({ field, fieldState }) => (
         <FormItem className="w-full">
           <FormControl>
-            <InputField className="h-36 px-1">
-              <Editor
-                indentWithTab={false}
-                fontFamily="inherit"
+            <InputRoot hasError={!!fieldState.error}>
+              <ControlInput
+                className="min-h-[7rem]"
                 placeholder={capitalize(field.name)}
                 id={field.name}
-                extensions={extensions}
-                basicSetup={basicSetup}
-                ref={field.ref}
+                variables={variables}
+                isAllowedVariable={isAllowedVariable}
                 value={field.value}
+                multiline
                 onChange={field.onChange}
-                height="100%"
+                enableTranslations
               />
-            </InputField>
+            </InputRoot>
           </FormControl>
-          <FormMessage>{`You can use variables by typing {{ select from the list or create a new one.`}</FormMessage>
+          <FormMessage>{hintMessage}</FormMessage>
         </FormItem>
       )}
     />

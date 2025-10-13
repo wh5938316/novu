@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ChannelTypeEnum } from '@novu/shared';
-import { StepFilter } from '../../shared/dtos/step-filter';
+import { StepFilterDto } from '../../shared/dtos/step-filter-dto';
+import { ConfigurationsDto } from './configurations.dto';
 import { CredentialsDto } from './credentials.dto';
 
 export class IntegrationResponseDto {
@@ -57,6 +58,12 @@ export class IntegrationResponseDto {
   credentials: CredentialsDto;
 
   @ApiProperty({
+    description: 'The configurations required for enabling the additional configurations of the integration.',
+    type: () => ConfigurationsDto,
+  })
+  configurations?: ConfigurationsDto;
+
+  @ApiProperty({
     description:
       'Indicates whether the integration is currently active. An active integration will process events and messages.',
     type: Boolean,
@@ -92,7 +99,7 @@ export class IntegrationResponseDto {
   @ApiPropertyOptional({
     description:
       'An array of conditions associated with the integration that may influence its behavior or processing logic.',
-    type: [StepFilter],
+    type: [StepFilterDto],
   })
-  conditions?: StepFilter[];
+  conditions?: StepFilterDto[];
 }

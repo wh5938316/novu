@@ -1,29 +1,71 @@
+import { FeatureFlagsKeysEnum } from '@novu/shared';
+import { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { ActivityFeedContent } from '@/components/activity/activity-feed-content';
 import { DashboardLayout } from '@/components/dashboard-layout';
-import { ActivityTable } from '@/components/activity/activity-table';
-import { ActivityFilters, defaultActivityFilters } from '@/components/activity/activity-filters';
-import { motion, AnimatePresence } from 'motion/react';
-import { ActivityPanel } from '@/components/activity/activity-panel';
-import { Badge } from '../components/primitives/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/primitives/tabs';
+import { useEnvironment } from '@/context/environment/hooks';
+import { useFeatureFlag } from '@/hooks/use-feature-flag';
+import { useTelemetry } from '@/hooks/use-telemetry';
+import { buildRoute, ROUTES } from '@/utils/routes';
+import { TelemetryEvent } from '@/utils/telemetry';
+import { RequestsTable } from '../components/http-logs/logs-table';
 import { PageMeta } from '../components/page-meta';
-import { useActivityUrlState } from '@/hooks/use-activity-url-state';
 
 export function ActivityFeed() {
-  const { activityItemId, filters, filterValues, handleActivitySelect, handleFiltersChange } = useActivityUrlState();
+  const isHttpLogsPageEnabled = useFeatureFlag(FeatureFlagsKeysEnum.IS_HTTP_LOGS_PAGE_ENABLED, false);
+  const { currentEnvironment } = useEnvironment();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const track = useTelemetry();
 
-  const hasActiveFilters = Object.entries(filters).some(([key, value]) => {
-    // Ignore dateRange as it's always present
-    if (key === 'dateRange') return false;
+  // Determine current tab based on URL
+  const getCurrentTab = () => {
+    if (location.pathname.includes('/activity/requests')) {
+      return 'requests';
+    }
 
-    // For arrays, check if they have any items
-    if (Array.isArray(value)) return value.length > 0;
+    if (location.pathname.includes('/activity/workflow-runs')) {
+      return 'workflow-runs';
+    }
 
-    // For other values, check if they exist
-    return !!value;
-  });
+    // Default fallback for the original activity-feed route
+    if (location.pathname.includes('/activity-feed')) {
+      return 'workflow-runs';
+    }
 
-  const handleClearFilters = () => {
-    handleFiltersChange(defaultActivityFilters);
+    return 'workflow-runs';
   };
+
+  const currentTab = getCurrentTab();
+
+  // Handle tab changes by navigating to the appropriate URL
+  const handleTabChange = (value: string) => {
+    if (!currentEnvironment?.slug) return;
+
+    if (value === 'requests') {
+      navigate(buildRoute(ROUTES.ACTIVITY_REQUESTS, { environmentSlug: currentEnvironment.slug }));
+    } else if (value === 'workflow-runs') {
+      navigate(buildRoute(ROUTES.ACTIVITY_WORKFLOW_RUNS, { environmentSlug: currentEnvironment.slug }));
+    }
+  };
+
+  // Redirect legacy activity-feed URLs to the new runs URL when feature flag is enabled
+  useEffect(() => {
+    if (isHttpLogsPageEnabled && location.pathname.includes('/activity-feed') && currentEnvironment?.slug) {
+      const newPath = buildRoute(ROUTES.ACTIVITY_WORKFLOW_RUNS, { environmentSlug: currentEnvironment.slug });
+      navigate(`${newPath}${location.search}`, {
+        replace: true,
+      });
+    }
+  }, [isHttpLogsPageEnabled, location.pathname, location.search, currentEnvironment?.slug, navigate]);
+
+  // Track page visit for requests tab
+  useEffect(() => {
+    if (currentTab === 'requests') {
+      track(TelemetryEvent.REQUEST_LOGS_PAGE_VISIT);
+    }
+  }, [currentTab, track]);
 
   return (
     <>
@@ -32,52 +74,27 @@ export function ActivityFeed() {
         headerStartItems={
           <h1 className="text-foreground-950 flex items-center gap-1">
             <span>Activity Feed</span>
-            <Badge kind="pill" size="2xs">
-              BETA
-            </Badge>
           </h1>
         }
       >
-        <ActivityFilters
-          onFiltersChange={handleFiltersChange}
-          initialValues={filterValues}
-          onReset={handleClearFilters}
-        />
-        <div className="relative flex h-[calc(100vh-88px)]">
-          <motion.div
-            transition={{
-              duration: 0.2,
-              ease: [0.32, 0.72, 0, 1],
-            }}
-            className="h-full flex-1"
-            style={{
-              width: activityItemId ? '65%' : '100%',
-            }}
-          >
-            <ActivityTable
-              selectedActivityId={activityItemId}
-              onActivitySelect={handleActivitySelect}
-              filters={filters}
-              hasActiveFilters={hasActiveFilters}
-              onClearFilters={handleClearFilters}
-            />
-          </motion.div>
-
-          <AnimatePresence mode="wait">
-            {activityItemId && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{
-                  duration: 0.2,
-                }}
-                className="bg-background h-full w-[35%] overflow-auto border-l"
-              >
-                <ActivityPanel activityId={activityItemId} onActivitySelect={handleActivitySelect} />
-              </motion.div>
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="-mx-2">
+          <TabsList variant="regular" className="border-t-0">
+            <TabsTrigger value="workflow-runs" variant="regular" size="lg">
+              Workflow Runs
+            </TabsTrigger>
+            {isHttpLogsPageEnabled && (
+              <TabsTrigger value="requests" variant="regular" size="lg">
+                Requests
+              </TabsTrigger>
             )}
-          </AnimatePresence>
-        </div>
+          </TabsList>
+          <TabsContent value="workflow-runs">
+            <ActivityFeedContent contentHeight="h-[calc(100vh-170px)]" />
+          </TabsContent>
+          <TabsContent value="requests" className="h-[calc(100vh-140px)]">
+            <RequestsTable />
+          </TabsContent>
+        </Tabs>
       </DashboardLayout>
     </>
   );

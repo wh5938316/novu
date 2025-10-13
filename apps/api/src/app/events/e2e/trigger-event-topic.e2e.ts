@@ -1,3 +1,11 @@
+import { Novu } from '@novu/api';
+import {
+  SubscriberPayloadDto,
+  TopicPayloadDto,
+  TopicResponseDto,
+  TriggerEventRequestDto,
+  TriggerRecipientsTypeEnum,
+} from '@novu/api/models/components';
 import { MessageRepository, NotificationRepository, NotificationTemplateEntity, SubscriberEntity } from '@novu/dal';
 import {
   ChannelTypeEnum,
@@ -11,18 +19,9 @@ import {
 } from '@novu/shared';
 import { SubscribersService, UserSession } from '@novu/testing';
 import { expect } from 'chai';
-
-import { Novu } from '@novu/api';
-import {
-  CreateTopicResponseDto,
-  SubscriberPayloadDto,
-  TopicPayloadDto,
-  TriggerEventRequestDto,
-  TriggerRecipientsTypeEnum,
-} from '@novu/api/models/components';
 import { initNovuClassSdk } from '../../shared/helpers/e2e/sdk/e2e-sdk.helper';
 
-describe('Topic Trigger Event', () => {
+describe('Topic Trigger Event #novu-v2', () => {
   describe('Trigger event for a topic - /v1/events/trigger (POST)', () => {
     let session: UserSession;
     let template: NotificationTemplateEntity;
@@ -30,7 +29,7 @@ describe('Topic Trigger Event', () => {
     let secondSubscriber: SubscriberEntity;
     let subscribers: SubscriberEntity[];
     let subscriberService: SubscribersService;
-    let createdTopicDto: CreateTopicResponseDto;
+    let createdTopicDto: TopicResponseDto;
     let to: Array<TopicPayloadDto | SubscriberPayloadDto | string>;
     const notificationRepository = new NotificationRepository();
     const messageRepository = new MessageRepository();
@@ -79,7 +78,7 @@ describe('Topic Trigger Event', () => {
 
       await novuClient.trigger(buildTriggerRequestPayload(template, to, attachments));
 
-      await session.awaitRunningJobs(template._id);
+      await session.waitForJobCompletion(template._id);
 
       expect(subscribers.length).to.be.greaterThan(0);
 
@@ -136,7 +135,7 @@ describe('Topic Trigger Event', () => {
         actor: { subscriberId: actor.subscriberId },
       });
 
-      await session.awaitRunningJobs(template._id);
+      await session.waitForJobCompletion(template._id);
 
       const actorNotifications = await notificationRepository.findBySubscriberId(session.environment._id, actor._id);
       expect(actorNotifications.length).to.equal(0);
@@ -180,6 +179,87 @@ describe('Topic Trigger Event', () => {
       expect(secondSubscriberEmails.length).to.equal(1);
     });
 
+    it('should exclude specific subscribers from topic using exclude array', async () => {
+      const excludedSubscriber = firstSubscriber;
+      const toWithExclude = [
+        {
+          type: TriggerRecipientsTypeEnum.Topic,
+          topicKey: createdTopicDto.key,
+          exclude: [excludedSubscriber.subscriberId],
+        },
+      ];
+
+      await novuClient.trigger(buildTriggerRequestPayload(template, toWithExclude));
+
+      await session.waitForJobCompletion(template._id);
+
+      const excludedSubscriberNotifications = await notificationRepository.findBySubscriberId(
+        session.environment._id,
+        excludedSubscriber._id
+      );
+      expect(excludedSubscriberNotifications.length).to.equal(0);
+
+      const excludedSubscriberMessages = await messageRepository.findBySubscriberChannel(
+        session.environment._id,
+        excludedSubscriber._id,
+        ChannelTypeEnum.IN_APP
+      );
+      expect(excludedSubscriberMessages.length).to.equal(0);
+
+      const excludedSubscriberEmails = await messageRepository.findBySubscriberChannel(
+        session.environment._id,
+        excludedSubscriber._id,
+        ChannelTypeEnum.EMAIL
+      );
+      expect(excludedSubscriberEmails.length).to.equal(0);
+
+      const secondSubscriberNotifications = await notificationRepository.findBySubscriberId(
+        session.environment._id,
+        secondSubscriber._id
+      );
+      expect(secondSubscriberNotifications.length).to.equal(1);
+
+      const secondSubscriberMessages = await messageRepository.findBySubscriberChannel(
+        session.environment._id,
+        secondSubscriber._id,
+        ChannelTypeEnum.IN_APP
+      );
+      expect(secondSubscriberMessages.length).to.equal(1);
+
+      const secondSubscriberEmails = await messageRepository.findBySubscriberChannel(
+        session.environment._id,
+        secondSubscriber._id,
+        ChannelTypeEnum.EMAIL
+      );
+      expect(secondSubscriberEmails.length).to.equal(1);
+    });
+
+    it('should exclude multiple subscribers from topic using exclude array', async () => {
+      const toWithExclude = [
+        {
+          type: TriggerRecipientsTypeEnum.Topic,
+          topicKey: createdTopicDto.key,
+          exclude: [firstSubscriber.subscriberId, secondSubscriber.subscriberId],
+        },
+      ];
+
+      await novuClient.trigger(buildTriggerRequestPayload(template, toWithExclude));
+
+      await session.waitForJobCompletion(template._id);
+
+      const firstSubscriberNotifications = await notificationRepository.findBySubscriberId(
+        session.environment._id,
+        firstSubscriber._id
+      );
+      expect(firstSubscriberNotifications.length).to.equal(0);
+
+      const secondSubscriberNotifications = await notificationRepository.findBySubscriberId(
+        session.environment._id,
+        secondSubscriber._id
+      );
+      expect(secondSubscriberNotifications.length).to.equal(0);
+    });
+
     it('should only exclude actor from topic, should send event if actor explicitly included', async () => {
       const actor = firstSubscriber;
       await novuClient.trigger({
@@ -187,7 +267,7 @@ describe('Topic Trigger Event', () => {
         actor: { subscriberId: actor.subscriberId },
       });
 
-      await session.awaitRunningJobs(template._id);
+      await session.waitForJobCompletion(template._id);
 
       for (const subscriber of subscribers) {
         const notifications = await notificationRepository.findBySubscriberId(session.environment._id, subscriber._id);
@@ -247,7 +327,7 @@ describe('Topic Trigger Event', () => {
 
       await novuClient.trigger(buildTriggerRequestPayload(template, to));
 
-      await session.awaitRunningJobs(template._id);
+      await session.waitForJobCompletion(template._id);
 
       expect(subscribers.length).to.be.greaterThan(0);
 
@@ -277,8 +357,8 @@ describe('Topic Trigger Event', () => {
     let firstTopicSubscribers: SubscriberEntity[];
     let subscribers: SubscriberEntity[];
     let subscriberService: SubscribersService;
-    let firstTopicDto: CreateTopicResponseDto;
-    let secondTopicDto: CreateTopicResponseDto;
+    let firstTopicDto: TopicResponseDto;
+    let secondTopicDto: TopicResponseDto;
     let to: Array<TopicPayloadDto | SubscriberPayloadDto | string>;
     const notificationRepository = new NotificationRepository();
     const messageRepository = new MessageRepository();
@@ -336,7 +416,10 @@ describe('Topic Trigger Event', () => {
     });
 
     it('should trigger an event successfully', async () => {
-      const response = await novuClient.trigger(buildTriggerRequestPayload(template, to));
+      const localTo = [...to, { type: TriggerRecipientsTypeEnum.Topic, topicKey: 'non-existing-topic-key' }];
+      const response = await novuClient.trigger(buildTriggerRequestPayload(template, localTo));
+
+      await session.waitForJobCompletion(template._id);
 
       const body = response.result;
 
@@ -344,6 +427,13 @@ describe('Topic Trigger Event', () => {
       expect(body.status).to.equal('processed');
       expect(body.acknowledged).to.equal(true);
       expect(body.transactionId).to.exist;
+
+      const messageCount = await messageRepository.count({
+        _environmentId: session.environment._id,
+        transactionId: body.transactionId,
+      });
+
+      expect(messageCount).to.equal(12);
     });
 
     it('should generate message and notification based on event', async () => {
@@ -360,7 +450,7 @@ describe('Topic Trigger Event', () => {
 
       await novuClient.trigger(buildTriggerRequestPayload(template, to, attachments));
 
-      await session.awaitRunningJobs(template._id);
+      await session.waitForJobCompletion(template._id);
       expect(subscribers.length).to.be.greaterThan(0);
 
       for (const subscriber of subscribers) {
@@ -421,7 +511,7 @@ describe('Topic Trigger Event', () => {
 
       await novuClient.trigger(buildTriggerRequestPayload(template, to));
 
-      await session.awaitRunningJobs(template._id);
+      await session.waitForJobCompletion(template._id);
 
       expect(subscribers.length).to.be.greaterThan(0);
 
@@ -446,7 +536,7 @@ describe('Topic Trigger Event', () => {
             content: '',
             metadata: {
               unit: DigestUnitEnum.SECONDS,
-              amount: 5,
+              amount: 1,
               digestKey: 'id',
               type: DigestTypeEnum.REGULAR,
             },
@@ -478,7 +568,7 @@ describe('Topic Trigger Event', () => {
         id: 'key-2',
       });
 
-      await session.awaitRunningJobs(template?._id, false, 0);
+      await session.waitForJobCompletion(template._id);
 
       for (const subscriber of firstTopicSubscribers) {
         const messages = await messageRepository.findBySubscriberChannel(
@@ -496,7 +586,7 @@ describe('Topic Trigger Event', () => {
   });
 });
 
-const createTopic = async (session: UserSession, key: TopicKey, name: TopicName): Promise<CreateTopicResponseDto> => {
+const createTopic = async (session: UserSession, key: TopicKey, name: TopicName): Promise<TopicResponseDto> => {
   const response = await initNovuClassSdk(session).topics.create({ key, name });
 
   expect(response.result.id).to.exist;
@@ -507,23 +597,21 @@ const createTopic = async (session: UserSession, key: TopicKey, name: TopicName)
 
 const addSubscribersToTopic = async (
   session: UserSession,
-  createdTopicDto: CreateTopicResponseDto,
+  createdTopicDto: TopicResponseDto,
   subscribers: SubscriberEntity[]
 ) => {
   const subscriberIds: ExternalSubscriberId[] = subscribers.map(
     (subscriber: SubscriberEntity) => subscriber.subscriberId
   );
 
-  const response = await initNovuClassSdk(session).topics.subscribers.assign(
+  const response = await initNovuClassSdk(session).topics.subscriptions.create(
     {
-      subscribers: subscriberIds,
+      subscriberIds,
     },
     createdTopicDto.key
   );
 
-  expect(response.result).to.be.eql({
-    succeeded: subscriberIds,
-  });
+  expect(response.result.data).to.be.ok;
 };
 
 const buildTriggerRequestPayload = (
@@ -532,7 +620,7 @@ const buildTriggerRequestPayload = (
   attachments?: Record<string, unknown>[]
 ): TriggerEventRequestDto => {
   return {
-    name: template.triggers[0].identifier,
+    workflowId: template.triggers[0].identifier,
     to,
     payload: {
       firstName: 'Testing of User Name',
@@ -549,7 +637,7 @@ const triggerEvent = async (
   payload: Record<string, unknown> = {}
 ): Promise<void> => {
   await initNovuClassSdk(session).trigger({
-    name: template.triggers[0].identifier,
+    workflowId: template.triggers[0].identifier,
     to,
     payload,
   });

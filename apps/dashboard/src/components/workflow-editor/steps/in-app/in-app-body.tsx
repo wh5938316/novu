@@ -1,54 +1,67 @@
-import { EditorView } from '@uiw/react-codemirror';
-import { useMemo } from 'react';
 import { useFormContext } from 'react-hook-form';
-
-import { Editor } from '@/components/primitives/editor';
 import { FormControl, FormField, FormItem, FormMessage } from '@/components/primitives/form/form';
-import { InputField } from '@/components/primitives/input';
+import { ControlInput } from '@/components/workflow-editor/control-input';
 import { useWorkflow } from '@/components/workflow-editor/workflow-provider';
-import { completions } from '@/utils/liquid-autocomplete';
-import { parseStepVariablesToLiquidVariables } from '@/utils/parseStepVariablesToLiquidVariables';
-import { capitalize } from '@/utils/string';
-import { autocompletion } from '@codemirror/autocomplete';
+import { useParseVariables } from '@/hooks/use-parse-variables';
+import { capitalize, containsHTMLEntities, containsVariables } from '@/utils/string';
+import { InputRoot } from '../../../primitives/input';
 
 const bodyKey = 'body';
 
-const basicSetup = {
-  defaultKeymap: true,
-};
+function getFormMessage(
+  fieldValue: string,
+  isOutputSanitizationDisabled: boolean,
+  isTranslationEnabled: boolean
+): string {
+  if (containsHTMLEntities(fieldValue) && !isOutputSanitizationDisabled) {
+    return 'HTML entities detected. Consider disabling content sanitization for proper rendering';
+  }
+
+  const hints = ['Type {{ to access variables, or wrap text in ** for bold.'];
+
+  if (isTranslationEnabled) {
+    hints.push('Type {{t. to access translation keys.');
+
+    return hints.join(' ');
+  }
+
+  return '';
+}
 
 export const InAppBody = () => {
-  const { control } = useFormContext();
-  const { step } = useWorkflow();
-  const variables = useMemo(() => (step ? parseStepVariablesToLiquidVariables(step.variables) : []), [step]);
-  const extensions = useMemo(
-    () => [autocompletion({ override: [completions(variables)] }), EditorView.lineWrapping],
-    [variables]
-  );
+  const { control, getValues } = useFormContext();
+  const { step, digestStepBeforeCurrent, workflow } = useWorkflow();
+  const { variables, isAllowedVariable } = useParseVariables(step?.variables, digestStepBeforeCurrent?.stepId);
 
   return (
     <FormField
       control={control}
       name={bodyKey}
-      render={({ field }) => (
+      render={({ field, fieldState }) => (
         <FormItem className="w-full">
           <FormControl>
-            <InputField className="h-36 px-1">
-              <Editor
-                fontFamily="inherit"
+            <InputRoot hasError={!!fieldState.error}>
+              <ControlInput
+                className="min-h-[7rem]"
                 indentWithTab={false}
                 placeholder={capitalize(field.name)}
                 id={field.name}
-                extensions={extensions}
-                basicSetup={basicSetup}
-                ref={field.ref}
                 value={field.value}
                 onChange={field.onChange}
-                height="100%"
+                variables={variables}
+                isAllowedVariable={isAllowedVariable}
+                multiline
+                enableTranslations
               />
-            </InputField>
+            </InputRoot>
           </FormControl>
-          <FormMessage>{`Type {{ for variables, or wrap text in ** for bold.`}</FormMessage>
+          <FormMessage>
+            {getFormMessage(
+              field.value,
+              getValues('disableOutputSanitization'),
+              workflow?.isTranslationEnabled || false
+            )}
+          </FormMessage>
         </FormItem>
       )}
     />

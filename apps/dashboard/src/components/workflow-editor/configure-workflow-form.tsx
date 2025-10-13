@@ -1,62 +1,88 @@
+import { zodResolver } from '@hookform/resolvers/zod';
+import {
+  EnvironmentTypeEnum,
+  MAX_DESCRIPTION_LENGTH,
+  PermissionsEnum,
+  ResourceOriginEnum,
+  UpdateWorkflowDto,
+  WorkflowResponseDto,
+} from '@novu/shared';
+import { FilesIcon } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { useNavigate } from 'react-router-dom';
+import { LuBookUp2 } from 'react-icons/lu';
+import {
+  RiArrowRightSLine,
+  RiCodeSSlashLine,
+  RiDeleteBin2Line,
+  RiListView,
+  RiMore2Fill,
+  RiSettingsLine,
+} from 'react-icons/ri';
+
+import { Link, useNavigate } from 'react-router-dom';
 import type { ExternalToast } from 'sonner';
 import { z } from 'zod';
-
+import { ConfirmationModal } from '@/components/confirmation-modal';
+import { DeleteWorkflowDialog } from '@/components/delete-workflow-dialog';
+import { RouteFill } from '@/components/icons/route-fill';
+import { PageMeta } from '@/components/page-meta';
 import { PAUSE_MODAL_TITLE, PauseModalDescription } from '@/components/pause-workflow-dialog';
+import { Button } from '@/components/primitives/button';
+import { CompactButton } from '@/components/primitives/button-compact';
+import { CopyButton } from '@/components/primitives/copy-button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuPortal,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/primitives/dropdown-menu';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+  FormRoot,
+} from '@/components/primitives/form/form';
+import { Input } from '@/components/primitives/input';
+import { Separator } from '@/components/primitives/separator';
 import { ToastIcon } from '@/components/primitives/sonner';
 import { showToast } from '@/components/primitives/sonner-helpers';
+import { Switch } from '@/components/primitives/switch';
+import { TagInput } from '@/components/primitives/tag-input';
+import { Textarea } from '@/components/primitives/textarea';
+import { Tooltip, TooltipContent, TooltipPortal, TooltipTrigger } from '@/components/primitives/tooltip';
+import { usePromotionalBanner } from '@/components/promotional/coming-soon-banner';
 import { SidebarContent, SidebarHeader } from '@/components/side-navigation/sidebar';
-import { MAX_DESCRIPTION_LENGTH, workflowSchema } from '@/components/workflow-editor/schema';
-import { useEnvironment } from '@/context/environment/hooks';
+import { workflowSchema } from '@/components/workflow-editor/schema';
+import { UpdateWorkflowFn } from '@/components/workflow-editor/workflow-provider';
+import { useAuth } from '@/context/auth/hooks';
+import { useEnvironment, useFetchEnvironments } from '@/context/environment/hooks';
 import { useDeleteWorkflow } from '@/hooks/use-delete-workflow';
 import { useFormAutosave } from '@/hooks/use-form-autosave';
 import { useSyncWorkflow } from '@/hooks/use-sync-workflow';
 import { useTags } from '@/hooks/use-tags';
-import { ROUTES } from '@/utils/routes';
+import { LocalizationResourceEnum } from '@/types/translations';
+import { Protect } from '@/utils/protect';
+import { buildRoute, ROUTES } from '@/utils/routes';
+import { TelemetryEvent } from '@/utils/telemetry';
 import { cn } from '@/utils/ui';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { UpdateWorkflowDto, WorkflowOriginEnum, WorkflowResponseDto } from '@novu/shared';
-import {
-  RiArrowRightSLine,
-  RiCodeSSlashLine,
-  RiDeleteBin2Line,
-  RiGitPullRequestFill,
-  RiMore2Fill,
-  RiSettingsLine,
-} from 'react-icons/ri';
-import { Link } from 'react-router-dom';
-import { TelemetryEvent } from '../../utils/telemetry';
-import { ConfirmationModal } from '../confirmation-modal';
-import { DeleteWorkflowDialog } from '../delete-workflow-dialog';
-import { RouteFill } from '../icons';
-import { PageMeta } from '../page-meta';
-import { Button } from '../primitives/button';
-import { CompactButton } from '../primitives/button-compact';
-import { CopyButton } from '../primitives/copy-button';
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '../primitives/form/form';
-import { Input, InputField } from '../primitives/input';
-import { Separator } from '../primitives/separator';
-import { Switch } from '../primitives/switch';
-import { TagInput } from '../primitives/tag-input';
-import { Textarea } from '../primitives/textarea';
-import { Tooltip, TooltipContent, TooltipPortal, TooltipTrigger } from '../primitives/tooltip';
-import { usePromotionalBanner } from '../promotional/coming-soon-banner';
+import { PayloadSchemaDrawer } from './payload-schema-drawer';
+import { TranslationToggleSection } from './translation-toggle-section';
 
-type ConfigureWorkflowFormProps = {
+interface ConfigureWorkflowFormProps {
   workflow: WorkflowResponseDto;
-  update: (data: UpdateWorkflowDto) => void;
-};
+  update: UpdateWorkflowFn;
+}
 
 const toastOptions: ExternalToast = {
   position: 'bottom-right',
@@ -68,12 +94,16 @@ const toastOptions: ExternalToast = {
 export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
   const { workflow, update } = props;
   const navigate = useNavigate();
-  const isReadOnly = workflow.origin === WorkflowOriginEnum.EXTERNAL;
   const [isPauseModalOpen, setIsPauseModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [isPayloadSchemaDrawerOpen, setIsPayloadSchemaDrawerOpen] = useState(false);
+
   const { tags } = useTags();
   const { currentEnvironment } = useEnvironment();
-  const { safeSync, isSyncable, tooltipContent, PromoteConfirmModal } = useSyncWorkflow(workflow);
+  const { currentOrganization } = useAuth();
+  const { environments = [] } = useFetchEnvironments({ organizationId: currentOrganization?._id });
+  const { isSyncable, PromoteConfirmModal } = useSyncWorkflow(workflow);
+
   const { show: showComingSoonBanner } = usePromotionalBanner({
     content: {
       title: '🚧 Export to Code is on the way!',
@@ -83,6 +113,9 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
       telemetryEvent: TelemetryEvent.EXPORT_TO_CODE_BANNER_REACTION,
     },
   });
+
+  const isReadOnly =
+    workflow.origin === ResourceOriginEnum.EXTERNAL || currentEnvironment?.type !== EnvironmentTypeEnum.DEV;
 
   const { deleteWorkflow, isPending: isDeleteWorkflowPending } = useDeleteWorkflow({
     onSuccess: () => {
@@ -127,6 +160,7 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
       workflowId: workflow.workflowId,
       description: workflow.description,
       tags: workflow.tags,
+      isTranslationEnabled: workflow.isTranslationEnabled,
     },
     resolver: zodResolver(workflowSchema),
     shouldFocusError: false,
@@ -136,7 +170,7 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
     previousData: workflow,
     form,
     isReadOnly,
-    save: update,
+    save: (data) => update(data as UpdateWorkflowDto),
     shouldClientValidate: true,
   });
 
@@ -149,7 +183,20 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
     showComingSoonBanner();
   }
 
-  const syncToLabel = `Sync to ${currentEnvironment?.name === 'Production' ? 'Development' : 'Production'}`;
+  const handleSavePayloadSchema = useCallback(() => {
+    showToast({
+      children: () => (
+        <>
+          <ToastIcon variant="success" />
+          <span className="text-sm">Payload schema updated.</span>
+        </>
+      ),
+      options: toastOptions,
+    });
+  }, []);
+
+  const otherEnvironments = environments.filter((env) => env._id !== currentEnvironment?._id);
+  const isDuplicable = useMemo(() => workflow.origin === ResourceOriginEnum.NOVU_CLOUD, [workflow.origin]);
 
   return (
     <>
@@ -171,6 +218,13 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
         onConfirm={onDeleteWorkflow}
         isLoading={isDeleteWorkflowPending}
       />
+      <PayloadSchemaDrawer
+        workflow={workflow}
+        isOpen={isPayloadSchemaDrawerOpen}
+        onOpenChange={setIsPayloadSchemaDrawerOpen}
+        onSave={handleSavePayloadSchema}
+        readOnly={isReadOnly}
+      />
       <PageMeta title={workflow.name} />
       <motion.div
         className={cn('relative flex h-full w-full flex-col')}
@@ -179,7 +233,7 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
         exit={{ opacity: 0.1 }}
         transition={{ duration: 0.1 }}
       >
-        <SidebarHeader className="items-center text-sm font-medium">
+        <SidebarHeader className="items-center border-b py-3 text-sm font-medium">
           <div className="flex items-center gap-1">
             <RouteFill />
             <span>Configure workflow</span>
@@ -187,59 +241,59 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
           {/**
            * Needs modal={false} to prevent the click freeze after the modal is closed
            */}
-          <DropdownMenu modal={false}>
-            <DropdownMenuTrigger asChild>
-              <CompactButton size="md" icon={RiMore2Fill} variant="ghost" className="ml-auto">
-                <span className="sr-only">More</span>
-              </CompactButton>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent className="w-56">
-              <DropdownMenuGroup>
-                {isSyncable && (
-                  <DropdownMenuItem onClick={handleExportToCode}>
-                    <RiCodeSSlashLine />
-                    Export to Code
-                  </DropdownMenuItem>
-                )}
-                {isSyncable ? (
-                  <DropdownMenuItem onClick={safeSync}>
-                    <RiGitPullRequestFill />
-                    {syncToLabel}
-                  </DropdownMenuItem>
-                ) : (
-                  <Tooltip>
-                    <TooltipTrigger>
-                      <DropdownMenuItem disabled>
-                        <RiGitPullRequestFill />
-                        {syncToLabel}
+          <Protect permission={PermissionsEnum.WORKFLOW_WRITE}>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <CompactButton size="md" icon={RiMore2Fill} variant="ghost" className="ml-auto">
+                  <span className="sr-only">More</span>
+                </CompactButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-56">
+                <DropdownMenuGroup>
+                  {isSyncable && (
+                    <DropdownMenuItem onClick={handleExportToCode}>
+                      <RiCodeSSlashLine />
+                      Export to Code
+                    </DropdownMenuItem>
+                  )}
+                  {isDuplicable && currentEnvironment?.type === EnvironmentTypeEnum.DEV && (
+                    <Link
+                      to={buildRoute(ROUTES.WORKFLOWS_DUPLICATE, {
+                        environmentSlug: currentEnvironment?.slug ?? '',
+                        workflowId: workflow.workflowId,
+                      })}
+                    >
+                      <DropdownMenuItem className="cursor-pointer">
+                        <FilesIcon />
+                        Duplicate workflow
                       </DropdownMenuItem>
-                    </TooltipTrigger>
-                    <TooltipPortal>
-                      <TooltipContent>{tooltipContent}</TooltipContent>
-                    </TooltipPortal>
-                  </Tooltip>
+                    </Link>
+                  )}
+                </DropdownMenuGroup>
+                {currentEnvironment?.type === EnvironmentTypeEnum.DEV && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuGroup className="*:cursor-pointer">
+                      <DropdownMenuItem
+                        className="text-destructive"
+                        disabled={workflow.origin === ResourceOriginEnum.EXTERNAL}
+                        onClick={() => {
+                          setIsDeleteModalOpen(true);
+                        }}
+                      >
+                        <RiDeleteBin2Line />
+                        Delete workflow
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  </>
                 )}
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup className="*:cursor-pointer">
-                <DropdownMenuItem
-                  className="text-destructive"
-                  disabled={workflow.origin === WorkflowOriginEnum.EXTERNAL}
-                  onClick={() => {
-                    setIsDeleteModalOpen(true);
-                  }}
-                >
-                  <RiDeleteBin2Line />
-                  Delete workflow
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </Protect>
           <PromoteConfirmModal />
         </SidebarHeader>
-        <Separator />
         <Form {...form}>
-          <form onBlur={onBlur}>
+          <FormRoot onBlur={onBlur}>
             <SidebarContent size="md">
               <FormField
                 control={form.control}
@@ -261,6 +315,7 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
                             setIsPauseModalOpen(true);
                             return;
                           }
+
                           onPauseWorkflow(checked);
                         }}
                         disabled={isReadOnly}
@@ -276,13 +331,16 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
                 control={form.control}
                 name="name"
                 defaultValue=""
-                render={({ field }) => (
+                render={({ field, fieldState }) => (
                   <FormItem>
-                    <FormLabel>Name</FormLabel>
+                    <FormLabel required>Name</FormLabel>
                     <FormControl>
-                      <InputField>
-                        <Input placeholder="New workflow" {...field} disabled={isReadOnly} />
-                      </InputField>
+                      <Input
+                        placeholder="New workflow"
+                        {...field}
+                        disabled={isReadOnly}
+                        hasError={!!fieldState.error}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -296,13 +354,14 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
                   <FormItem>
                     <FormLabel>Identifier</FormLabel>
                     <FormControl>
-                      <InputField className="flex overflow-hidden pr-0">
-                        <Input placeholder="Untitled" className="cursor-default" {...field} readOnly />
-                        <CopyButton
-                          valueToCopy={field.value}
-                          className="h-[34px] rounded-none border-l border-neutral-200"
-                        />
-                      </InputField>
+                      <Input
+                        size="xs"
+                        trailingNode={<CopyButton valueToCopy={field.value} />}
+                        placeholder="Untitled"
+                        className="cursor-default"
+                        {...field}
+                        readOnly
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -320,6 +379,7 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
                         placeholder="Describe what this workflow does"
                         {...field}
                         maxLength={MAX_DESCRIPTION_LENGTH}
+                        showCounter
                         disabled={isReadOnly}
                       />
                     </FormControl>
@@ -352,7 +412,7 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
                 )}
               />
             </SidebarContent>
-          </form>
+          </FormRoot>
         </Form>
         <Separator />
         <SidebarContent size="lg">
@@ -363,10 +423,43 @@ export const ConfigureWorkflowForm = (props: ConfigureWorkflowFormProps) => {
               leadingIcon={RiSettingsLine}
               className="flex w-full justify-start gap-1.5 p-1.5 text-xs font-medium"
               type="button"
+              trailingIcon={RiArrowRightSLine}
             >
-              Configure channel preferences <RiArrowRightSLine className="ml-auto h-4 w-4 text-neutral-600" />
+              Configure channel preferences
+              <span className="ml-auto" />
             </Button>
           </Link>
+          {workflow?.origin === ResourceOriginEnum.NOVU_CLOUD && (
+            <Button
+              variant="secondary"
+              mode="outline"
+              leadingIcon={RiListView}
+              className="flex w-full justify-start gap-1.5 p-1.5 text-xs font-medium"
+              type="button"
+              onClick={() => setIsPayloadSchemaDrawerOpen(true)}
+              trailingIcon={RiArrowRightSLine}
+            >
+              Manage payload schema
+              <span className="ml-auto" />
+            </Button>
+          )}
+          <FormField
+            control={form.control}
+            name="isTranslationEnabled"
+            render={({ field }) => (
+              <TranslationToggleSection
+                value={field.value ?? false}
+                onChange={(checked) => {
+                  field.onChange(checked);
+                  saveForm();
+                }}
+                isReadOnly={isReadOnly}
+                resourceId={workflow?.workflowId}
+                resourceType={LocalizationResourceEnum.WORKFLOW}
+                showDrawer={!!(workflow?.workflowId && workflow?.isTranslationEnabled)}
+              />
+            )}
+          />
         </SidebarContent>
         <Separator />
       </motion.div>

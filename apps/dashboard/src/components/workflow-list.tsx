@@ -1,4 +1,6 @@
-import { DefaultPagination } from '@/components/default-pagination';
+import { DirectionEnum, ListWorkflowResponse } from '@novu/shared';
+import { RiMore2Fill } from 'react-icons/ri';
+import { useSearchParams } from 'react-router-dom';
 import { Skeleton } from '@/components/primitives/skeleton';
 import {
   Table,
@@ -7,112 +9,182 @@ import {
   TableFooter,
   TableHead,
   TableHeader,
+  TableHeadSortDirection,
   TableRow,
 } from '@/components/primitives/table';
+import { TablePaginationFooter } from '@/components/primitives/table-pagination-footer';
 import { WorkflowListEmpty } from '@/components/workflow-list-empty';
 import { WorkflowRow } from '@/components/workflow-row';
-import { useFetchWorkflows } from '@/hooks/use-fetch-workflows';
-import { RiMore2Fill } from 'react-icons/ri';
-import { createSearchParams, useLocation, useSearchParams } from 'react-router-dom';
+import { ServerErrorPage } from '@/pages/server-error-page';
 
-export function WorkflowList() {
-  const [searchParams] = useSearchParams();
-  const location = useLocation();
+export type SortableColumn = 'name' | 'updatedAt' | 'lastTriggeredAt';
 
-  const hrefFromOffset = (offset: number) => {
-    return `${location.pathname}?${createSearchParams({
-      ...searchParams,
-      offset: offset.toString(),
-    })}`;
-  };
+interface WorkflowListProps {
+  data?: ListWorkflowResponse;
+  isLoading?: boolean;
+  isError?: boolean;
+  limit?: number;
+  orderBy?: SortableColumn;
+  orderDirection?: TableHeadSortDirection;
+  hasActiveFilters?: boolean;
+  onClearFilters?: () => void;
+  onPageSizeChange?: (pageSize: number) => void;
+}
+
+interface WorkflowListSkeletonProps {
+  limit: number;
+}
+
+function WorkflowListSkeleton({ limit }: WorkflowListSkeletonProps) {
+  return (
+    <>
+      {new Array(limit).fill(0).map((_, index) => (
+        <TableRow key={index}>
+          <TableCell className="flex flex-col gap-1 font-medium">
+            <Skeleton className="h-5 w-[20ch]" />
+            <Skeleton className="h-3 w-[15ch] rounded-full" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-5 w-[6ch] rounded-full" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-5 w-[8ch] rounded-full" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-5 w-[7ch] rounded-full" />
+          </TableCell>
+          <TableCell className="text-foreground-600 text-sm font-medium">
+            <Skeleton className="h-5 w-[14ch] rounded-full" />
+          </TableCell>
+          <TableCell className="text-foreground-600 text-sm font-medium">
+            <Skeleton className="h-5 w-[14ch] rounded-full" />
+          </TableCell>
+          <TableCell className="text-foreground-600 text-sm font-medium">
+            <RiMore2Fill className="size-4 opacity-50" />
+          </TableCell>
+        </TableRow>
+      ))}
+    </>
+  );
+}
+
+export function WorkflowList({
+  data,
+  isLoading,
+  isError,
+  limit = 10,
+  orderBy,
+  orderDirection,
+  hasActiveFilters,
+  onClearFilters,
+  onPageSizeChange,
+}: WorkflowListProps) {
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const offset = parseInt(searchParams.get('offset') || '0');
-  const limit = parseInt(searchParams.get('limit') || '12');
+  const currentPage = Math.floor(offset / limit) + 1;
+  const totalPages = Math.ceil((data?.totalCount || 0) / limit);
 
-  const { data, isPending, isError, currentPage, totalPages } = useFetchWorkflows({
-    limit,
-    offset,
-  });
+  const navigateToPage = (newPage: number) => {
+    const newOffset = (newPage - 1) * limit;
+    setSearchParams((prev) => {
+      const newParams = new URLSearchParams(prev);
+      newParams.set('offset', newOffset.toString());
+      return newParams;
+    });
+  };
 
-  if (isError) return null;
+  const handlePreviousPage = () => navigateToPage(Math.max(1, currentPage - 1));
+  const handleNextPage = () => navigateToPage(Math.min(totalPages, currentPage + 1));
 
-  if (!isPending && data.totalCount === 0) {
-    return <WorkflowListEmpty />;
+  const handlePageSizeChange = (newPageSize: number) => {
+    setSearchParams((prev) => {
+      const newParams = new URLSearchParams(prev);
+      newParams.set('limit', newPageSize.toString());
+      newParams.set('offset', '0'); // Reset to first page when changing page size
+      return newParams;
+    });
+    onPageSizeChange?.(newPageSize);
+  };
+
+  const toggleSort = (column: SortableColumn) => {
+    const newDirection =
+      column === orderBy
+        ? orderDirection === DirectionEnum.DESC
+          ? DirectionEnum.ASC
+          : DirectionEnum.DESC
+        : DirectionEnum.DESC;
+    searchParams.set('orderDirection', newDirection);
+    searchParams.set('orderBy', column);
+    setSearchParams(searchParams);
+  };
+
+  if (isError) return <ServerErrorPage />;
+
+  if (!isLoading && data?.totalCount === 0) {
+    return <WorkflowListEmpty emptySearchResults={hasActiveFilters} onClearFilters={onClearFilters} />;
   }
 
   return (
-    <div className="flex h-full flex-col px-2.5 py-2">
+    <div className="flex h-full flex-col">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Workflows</TableHead>
+            <TableHead
+              sortable
+              sortDirection={orderBy === 'name' ? orderDirection : false}
+              onSort={() => toggleSort('name')}
+            >
+              Workflows
+            </TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Steps</TableHead>
             <TableHead>Tags</TableHead>
-            <TableHead>Last updated</TableHead>
+            <TableHead
+              sortable
+              sortDirection={orderBy === 'lastTriggeredAt' ? orderDirection : false}
+              onSort={() => toggleSort('lastTriggeredAt')}
+            >
+              Last triggered
+            </TableHead>
+            <TableHead
+              sortable
+              sortDirection={orderBy === 'updatedAt' ? orderDirection : false}
+              onSort={() => toggleSort('updatedAt')}
+            >
+              Last updated
+            </TableHead>
+
             <TableHead />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {isPending ? (
-            <>
-              {new Array(limit).fill(0).map((_, index) => (
-                <TableRow key={index}>
-                  <TableCell className="flex flex-col gap-1 font-medium">
-                    <Skeleton className="h-5 w-[20ch]" />
-                    <Skeleton className="h-3 w-[15ch] rounded-full" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-[6ch] rounded-full" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-[8ch] rounded-full" />
-                  </TableCell>
-                  <TableCell>
-                    <Skeleton className="h-5 w-[7ch] rounded-full" />
-                  </TableCell>
-                  <TableCell className="text-foreground-600 text-sm font-medium">
-                    <Skeleton className="h-5 w-[14ch] rounded-full" />
-                  </TableCell>
-                  <TableCell className="text-foreground-600 text-sm font-medium">
-                    <RiMore2Fill className="size-4 opacity-50" />
-                  </TableCell>
-                </TableRow>
-              ))}
-            </>
+          {isLoading ? (
+            <WorkflowListSkeleton limit={limit} />
           ) : (
             <>
-              {data.workflows.map((workflow) => (
+              {data?.workflows.map((workflow) => (
                 <WorkflowRow key={workflow._id} workflow={workflow} />
               ))}
             </>
           )}
         </TableBody>
-        {data && limit < data.totalCount && (
+        {data && (
           <TableFooter>
             <TableRow>
-              <TableCell colSpan={5}>
-                <div className="flex items-center justify-between">
-                  {data ? (
-                    <span className="text-foreground-600 block text-sm font-normal">
-                      Page {currentPage} of {totalPages}
-                    </span>
-                  ) : (
-                    <Skeleton className="h-5 w-[20ch]" />
-                  )}
-                  {data ? (
-                    <DefaultPagination
-                      hrefFromOffset={hrefFromOffset}
-                      totalCount={data.totalCount}
-                      limit={limit}
-                      offset={offset}
-                    />
-                  ) : (
-                    <Skeleton className="h-5 w-32" />
-                  )}
-                </div>
+              <TableCell colSpan={7} className="p-0">
+                <TablePaginationFooter
+                  pageSize={limit}
+                  currentPageItemsCount={data.workflows.length}
+                  onPreviousPage={handlePreviousPage}
+                  onNextPage={handleNextPage}
+                  onPageSizeChange={handlePageSizeChange}
+                  hasPreviousPage={currentPage > 1}
+                  hasNextPage={currentPage < totalPages}
+                  itemName="workflows"
+                  totalCount={data.totalCount}
+                />
               </TableCell>
-              <TableCell colSpan={2} />
             </TableRow>
           </TableFooter>
         )}

@@ -1,4 +1,4 @@
-import { IApiRateLimitMaximum } from '../../types';
+import { EnvironmentTypeEnum, IApiRateLimitMaximum } from '../../types';
 
 export interface IEnvironment {
   _id: string;
@@ -10,7 +10,8 @@ export interface IEnvironment {
   widget: IWidgetSettings;
   dns?: IDnsSettings;
   apiRateLimits?: IApiRateLimitMaximum;
-
+  color: string;
+  type: EnvironmentTypeEnum;
   branding?: {
     color: string;
     logo: string;
@@ -26,6 +27,11 @@ export interface IEnvironment {
   bridge?: {
     url?: string;
   };
+
+  webhookAppId?: string;
+
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 export interface IWidgetSettings {

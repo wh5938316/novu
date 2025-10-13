@@ -1,5 +1,5 @@
+import { ApiRateLimitCategoryEnum, EnvironmentEnum, EnvironmentTypeEnum } from '@novu/shared';
 import mongoose, { Schema } from 'mongoose';
-import { ApiRateLimitCategoryEnum } from '@novu/shared';
 
 import { schemaOptions } from '../schema-default.options';
 import { EnvironmentDBModel } from './environment.entity';
@@ -53,9 +53,17 @@ const environmentSchema = new Schema<EnvironmentDBModel>(
     bridge: {
       url: Schema.Types.String,
     },
+    webhookAppId: {
+      type: Schema.Types.String,
+    },
     _parentId: {
       type: Schema.Types.ObjectId,
       ref: 'Environment',
+    },
+    color: Schema.Types.String,
+    type: {
+      type: Schema.Types.String,
+      enum: Object.values(EnvironmentTypeEnum),
     },
   },
   schemaOptions
@@ -96,6 +104,27 @@ environmentSchema.index(
     unique: true,
   }
 );
+
+// To provide backward compatibility with environments created before the type field was added
+environmentSchema.post(['find', 'findOne', 'findOneAndUpdate'], (docs) => {
+  const processDoc = (document: any) => {
+    if (document && !document.type) {
+      let defaultType = EnvironmentTypeEnum.PROD;
+      if (document.name === EnvironmentEnum.DEVELOPMENT) {
+        defaultType = EnvironmentTypeEnum.DEV;
+      } else if (document.name === EnvironmentEnum.PRODUCTION) {
+        defaultType = EnvironmentTypeEnum.PROD;
+      }
+      Object.assign(document, { type: defaultType });
+    }
+  };
+
+  if (Array.isArray(docs)) {
+    docs.forEach(processDoc);
+  } else if (docs) {
+    processDoc(docs);
+  }
+});
 
 export const Environment =
   (mongoose.models.Environment as mongoose.Model<EnvironmentDBModel>) ||

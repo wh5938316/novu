@@ -1,4 +1,9 @@
-import type { StepDataDto, GeneratePreviewRequestDto, GeneratePreviewResponseDto, IEnvironment } from '@novu/shared';
+import type {
+  GeneratePreviewRequestDto,
+  GeneratePreviewResponseDto,
+  IEnvironment,
+  StepResponseDto,
+} from '@novu/shared';
 import { getV2, postV2 } from './api.client';
 
 export const getStep = async ({
@@ -9,8 +14,10 @@ export const getStep = async ({
   environment: IEnvironment;
   stepSlug: string;
   workflowSlug: string;
-}): Promise<StepDataDto> => {
-  const { data } = await getV2<{ data: StepDataDto }>(`/workflows/${workflowSlug}/steps/${stepSlug}`, { environment });
+}): Promise<StepResponseDto> => {
+  const { data } = await getV2<{ data: StepResponseDto }>(`/workflows/${workflowSlug}/steps/${stepSlug}`, {
+    environment,
+  });
 
   return data;
 };
@@ -20,15 +27,17 @@ export const previewStep = async ({
   previewData,
   stepSlug,
   workflowSlug,
+  signal,
 }: {
   environment: IEnvironment;
   previewData?: GeneratePreviewRequestDto;
   stepSlug: string;
   workflowSlug: string;
+  signal?: AbortSignal;
 }): Promise<GeneratePreviewResponseDto> => {
   const { data } = await postV2<{ data: GeneratePreviewResponseDto }>(
     `/workflows/${workflowSlug}/step/${stepSlug}/preview`,
-    { environment, body: previewData }
+    { environment, body: previewData, signal }
   );
 
   return data;

@@ -1,10 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-
 import { MessageRepository } from '@novu/dal';
 import { ChannelTypeEnum, WebSocketEventEnum } from '@novu/shared';
-
-import { ExternalServicesRouteCommand } from './external-services-route.command';
 import { WSGateway } from '../../ws.gateway';
+import { ExternalServicesRouteCommand } from './external-services-route.command';
 import { IUnreadCountPaginationIndication, IUnseenCountPaginationIndication } from './types';
 
 const LOG_CONTEXT = 'ExternalServicesRoute';
@@ -65,22 +63,48 @@ export class ExternalServicesRoute {
       return;
     }
 
-    let unreadCount = this.extractCount(command.payload?.unreadCount);
-
-    if (unreadCount === undefined) {
-      unreadCount = await this.messageRepository.getCount(
+    const [unreadCount, severityCounts] = await Promise.all([
+      this.messageRepository.getCount(
         command._environmentId,
         command.userId,
         ChannelTypeEnum.IN_APP,
         { read: false },
-        { limit: 101 }
-      );
-    }
+        { limit: 101 },
+        undefined,
+        undefined,
+        'primary'
+      ),
+      this.messageRepository.getCountBySeverity(
+        command._environmentId,
+        command.userId,
+        ChannelTypeEnum.IN_APP,
+        { read: false, snoozed: false },
+        { limit: 99 }
+      ),
+    ]);
+
     const paginationIndication: IUnreadCountPaginationIndication =
       unreadCount > 100 ? { unreadCount: 100, hasMore: true } : { unreadCount, hasMore: false };
 
+    const counts = {
+      total: unreadCount,
+      severity: {
+        high: 0,
+        medium: 0,
+        low: 0,
+        none: 0,
+      },
+    };
+
+    for (const { severity, count } of severityCounts) {
+      if (severity in counts.severity) {
+        counts.severity[severity] = count;
+      }
+    }
+
     await this.wsGateway.sendMessage(command.userId, WebSocketEventEnum.UNREAD, {
       unreadCount: paginationIndication.unreadCount,
+      counts,
       hasMore: paginationIndication.hasMore,
     });
   }
@@ -92,17 +116,13 @@ export class ExternalServicesRoute {
       return;
     }
 
-    let unseenCount = this.extractCount(command.payload?.unseenCount);
-
-    if (unseenCount === undefined) {
-      unseenCount = await this.messageRepository.getCount(
-        command._environmentId,
-        command.userId,
-        ChannelTypeEnum.IN_APP,
-        { seen: false },
-        { limit: 101 }
-      );
-    }
+    const unseenCount = await this.messageRepository.getCount(
+      command._environmentId,
+      command.userId,
+      ChannelTypeEnum.IN_APP,
+      { seen: false },
+      { limit: 101 }
+    );
 
     const paginationIndication: IUnseenCountPaginationIndication =
       unseenCount > 100 ? { unseenCount: 100, hasMore: true } : { unseenCount, hasMore: false };
@@ -111,18 +131,6 @@ export class ExternalServicesRoute {
       unseenCount: paginationIndication.unseenCount,
       hasMore: paginationIndication.hasMore,
     });
-  }
-
-  private extractCount(count: unknown): number | undefined {
-    if (count === null || count === undefined) return undefined;
-
-    if (typeof count === 'number') {
-      return count;
-    }
-
-    if (typeof count === 'string') {
-      return parseInt(count, 10);
-    }
   }
 
   private async connectionExist(command: ExternalServicesRouteCommand): Promise<boolean | undefined> {

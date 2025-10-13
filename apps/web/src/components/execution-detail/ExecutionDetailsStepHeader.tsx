@@ -1,9 +1,8 @@
-import { Container, Grid } from '@mantine/core';
-import { format, parseISO } from 'date-fns';
 import styled from '@emotion/styled';
-import { StepTypeEnum, DelayTypeEnum, JobStatusEnum } from '@novu/shared';
-
-import { colors, Text, CheckCircle, ErrorIcon } from '@novu/design-system';
+import { Container, Grid } from '@mantine/core';
+import { CheckCircle, colors, ErrorIcon, Text } from '@novu/design-system';
+import { DelayTypeEnum, JobStatusEnum, StepTypeEnum } from '@novu/shared';
+import { format, parseISO } from 'date-fns';
 import { ExecutionDetailsWebhookFeedback } from './ExecutionDetailsWebhookFeedback';
 import { getLogoByType } from './helpers';
 
@@ -85,6 +84,10 @@ const generateDetailByStepAndStatus = (status, job) => {
     return `Success! ${job.executionDetails?.at(-1)?.detail}`;
   }
 
+  if (status === JobStatusEnum.FAILED) {
+    return `Failed! ${job.executionDetails?.at(-1)?.detail}`;
+  }
+
   if (job.type === StepTypeEnum.DIGEST) {
     if (status === JobStatusEnum.SKIPPED) {
       return job.executionDetails?.at(-1)?.detail;
@@ -99,8 +102,12 @@ const generateDetailByStepAndStatus = (status, job) => {
   if (job.type === StepTypeEnum.DELAY) {
     const { digest, step: stepMetadata, payload } = job;
 
-    if (!digest.amount && !digest.unit) return `Waiting to receive execution delay from bridge endpoint`;
-    if (stepMetadata?.metadata?.type === DelayTypeEnum.SCHEDULED) {
+    if (
+      stepMetadata?.metadata &&
+      'type' in stepMetadata.metadata &&
+      stepMetadata.metadata.type === DelayTypeEnum.SCHEDULED &&
+      'delayPath' in stepMetadata.metadata
+    ) {
       return `Delaying execution until ${payload[stepMetadata.metadata.delayPath]}`;
     }
 
@@ -122,9 +129,9 @@ const getDetailsStyledComponentByStepStatus = (status) => {
   return StepDetails;
 };
 
-const StepOutcome = ({ createdAt, name, detail, status }) => {
+const StepOutcome = ({ updatedAt, name, detail, status }) => {
   const Details = getDetailsStyledComponentByStepStatus(status);
-  const date = format(parseISO(createdAt), 'dd/MM/yyyy');
+  const date = format(parseISO(updatedAt), 'dd/MM/yyyy');
 
   return (
     <>
@@ -145,7 +152,7 @@ export const ExecutionDetailsStepHeader = ({ step }) => {
         <StepLogo status={status} type={step.type} />
       </Grid.Col>
       <Grid.Col span={7}>
-        <StepOutcome createdAt={step?.createdAt} name={step?.type} detail={generatedDetail} status={status} />
+        <StepOutcome updatedAt={step?.updatedAt} name={step?.type} detail={generatedDetail} status={status} />
       </Grid.Col>
       <Grid.Col span={4}>
         <ExecutionDetailsWebhookFeedback executionDetails={step.executionDetails} />

@@ -32,8 +32,13 @@ export const smsProviderSchemas = {
   simpletexting: genericProviderSchemas,
   sms77: genericProviderSchemas,
   'sms-central': genericProviderSchemas,
+  smsmode: genericProviderSchemas,
   sns: genericProviderSchemas,
   telnyx: genericProviderSchemas,
   termii: genericProviderSchemas,
   twilio: twilioProviderSchemas,
+  'afro-message': genericProviderSchemas,
+  unifonic: genericProviderSchemas,
+  imedia: genericProviderSchemas,
+  sinch: genericProviderSchemas,
 } as const satisfies Record<SmsProviderIdEnum, { output: JsonSchema }>;

@@ -1,7 +1,4 @@
-import { expect } from 'chai';
-import axios from 'axios';
-
-import { UserSession } from '@novu/testing';
+import { Novu } from '@novu/api';
 import {
   MessageEntity,
   MessageRepository,
@@ -10,10 +7,14 @@ import {
   SubscriberRepository,
 } from '@novu/dal';
 import { ChannelTypeEnum, MessagesStatusEnum } from '@novu/shared';
+import { UserSession } from '@novu/testing';
+import axios from 'axios';
+import { expect } from 'chai';
+import { expectSdkExceptionGeneric, initNovuClassSdk } from '../../shared/helpers/e2e/sdk/e2e-sdk.helper';
 
 const axiosInstance = axios.create();
 
-describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
+describe('Mark as Seen - /widgets/messages/mark-as (POST) #novu-v2', async () => {
   const messageRepository = new MessageRepository();
   const subscriberRepository = new SubscriberRepository();
   let session: UserSession;
@@ -21,18 +22,19 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
   let subscriberId;
   let subscriber: SubscriberEntity;
   let message: MessageEntity;
-
+  let novuClient: Novu;
   before(async () => {
     session = new UserSession();
     await session.initialize();
     subscriberId = SubscriberRepository.createObjectId();
 
     template = await session.createTemplate();
+    novuClient = initNovuClassSdk(session);
   });
 
   beforeEach(async () => {
-    await session.triggerEvent(template.triggers[0].identifier, subscriberId);
-    await session.awaitRunningJobs(template._id);
+    await novuClient.trigger({ workflowId: template.triggers[0].identifier, to: subscriberId });
+    await session.waitForJobCompletion(template._id);
 
     subscriber = await getSubscriber(session, subscriberRepository, subscriberId);
     message = await getMessage(session, messageRepository, subscriber);
@@ -47,8 +49,14 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     await pruneMessages(messageRepository);
   });
 
-  it('should change the seen status', async function () {
-    await markAs(session.apiKey, message._id, MessagesStatusEnum.SEEN, subscriberId);
+  it('should change the seen status', async () => {
+    await novuClient.subscribers.messages.markAllAs(
+      {
+        messageId: message._id,
+        markAs: MessagesStatusEnum.SEEN,
+      },
+      subscriberId
+    );
 
     const updatedMessage = await getMessage(session, messageRepository, subscriber);
 
@@ -58,8 +66,14 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     expect(updatedMessage.lastReadDate).to.be.not.ok;
   });
 
-  it('should change the read status', async function () {
-    await markAs(session.apiKey, message._id, MessagesStatusEnum.READ, subscriberId);
+  it('should change the read status', async () => {
+    await novuClient.subscribers.messages.markAllAs(
+      {
+        messageId: message._id,
+        markAs: MessagesStatusEnum.READ,
+      },
+      subscriberId
+    );
 
     const updatedMessage = await getMessage(session, messageRepository, subscriber);
 
@@ -69,9 +83,15 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     expect(updatedMessage.lastReadDate).to.be.ok;
   });
 
-  it('should change the seen status to unseen', async function () {
+  it('should change the seen status to unseen', async () => {
     // simulate user seen
-    await markAs(session.apiKey, message._id, MessagesStatusEnum.SEEN, subscriberId);
+    await novuClient.subscribers.messages.markAllAs(
+      {
+        messageId: message._id,
+        markAs: MessagesStatusEnum.SEEN,
+      },
+      subscriberId
+    );
 
     const seenMessage = await getMessage(session, messageRepository, subscriber);
     expect(seenMessage.seen).to.equal(true);
@@ -79,7 +99,13 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     expect(seenMessage.lastSeenDate).to.be.ok;
     expect(seenMessage.lastReadDate).to.be.not.ok;
 
-    await markAs(session.apiKey, message._id, MessagesStatusEnum.UNSEEN, subscriberId);
+    await novuClient.subscribers.messages.markAllAs(
+      {
+        messageId: message._id,
+        markAs: MessagesStatusEnum.UNSEEN,
+      },
+      subscriberId
+    );
 
     const updatedMessage = await getMessage(session, messageRepository, subscriber);
     expect(updatedMessage.seen).to.equal(false);
@@ -88,9 +114,15 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     expect(updatedMessage.lastReadDate).to.be.not.ok;
   });
 
-  it('should change the read status to unread', async function () {
+  it('should change the read status to unread', async () => {
     // simulate user read
-    await markAs(session.apiKey, message._id, MessagesStatusEnum.READ, subscriberId);
+    await novuClient.subscribers.messages.markAllAs(
+      {
+        messageId: message._id,
+        markAs: MessagesStatusEnum.READ,
+      },
+      subscriberId
+    );
 
     const readMessage = await getMessage(session, messageRepository, subscriber);
     expect(readMessage.seen).to.equal(true);
@@ -98,7 +130,13 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     expect(readMessage.lastSeenDate).to.be.ok;
     expect(readMessage.lastReadDate).to.be.ok;
 
-    await markAs(session.apiKey, message._id, MessagesStatusEnum.UNREAD, subscriberId);
+    await novuClient.subscribers.messages.markAllAs(
+      {
+        messageId: message._id,
+        markAs: MessagesStatusEnum.UNREAD,
+      },
+      subscriberId
+    );
     const updateMessage = await getMessage(session, messageRepository, subscriber);
     expect(updateMessage.seen).to.equal(true);
     expect(updateMessage.read).to.equal(false);
@@ -106,7 +144,7 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
     expect(updateMessage.lastReadDate).to.be.ok;
   });
 
-  it('should throw exception if messages were not provided', async function () {
+  it('should throw exception if messages were not provided', async () => {
     const failureMessage = 'should not reach here, should throw error';
 
     try {
@@ -121,19 +159,18 @@ describe('Mark as Seen - /widgets/messages/mark-as (POST)', async () => {
       expect(e.response.data.message).to.equal('messageId is required');
       expect(e.response.data.statusCode).to.equal(400);
     }
+    const { error } = await expectSdkExceptionGeneric(() =>
+      novuClient.subscribers.messages.markAllAs(
+        {
+          messageId: [],
+          markAs: MessagesStatusEnum.SEEN,
+        },
+        subscriberId
+      )
+    );
 
-    try {
-      await markAs(session.apiKey, [], MessagesStatusEnum.SEEN, subscriberId);
-
-      expect.fail(failureMessage);
-    } catch (e) {
-      if (e.message === failureMessage) {
-        expect(e.message).to.be.empty;
-      }
-
-      expect(e.response.data.message).to.equal('messageId is required');
-      expect(e.response.data.statusCode).to.equal(400);
-    }
+    expect(error?.message).to.equal('messageId is required');
+    expect(error?.statusCode).to.equal(400);
   });
 });
 
@@ -195,5 +232,5 @@ async function getSubscriber(
 }
 
 async function pruneMessages(messageRepository) {
-  await messageRepository.deleteMany({});
+  await messageRepository.delete({});
 }

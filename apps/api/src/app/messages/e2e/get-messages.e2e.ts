@@ -1,29 +1,32 @@
-import { SubscribersService, UserSession } from '@novu/testing';
-import { NotificationTemplateEntity, SubscriberEntity } from '@novu/dal';
-import { expect } from 'chai';
 import { Novu } from '@novu/api';
 import { ChannelTypeEnum } from '@novu/api/models/components';
+import { NotificationTemplateEntity, SubscriberEntity } from '@novu/dal';
+import { SubscribersService, UserSession } from '@novu/testing';
+import { expect } from 'chai';
 import { initNovuClassSdk } from '../../shared/helpers/e2e/sdk/e2e-sdk.helper';
 
-describe('Get Message - /messages (GET)', function () {
+describe('Get Message - /messages (GET) #novu-v2', () => {
   let session: UserSession;
   let template: NotificationTemplateEntity;
   let subscriber: SubscriberEntity;
   let subscriberService: SubscribersService;
   let novuClient: Novu;
+
   beforeEach(async () => {
     session = new UserSession();
     await session.initialize();
+
     template = await session.createTemplate();
     subscriberService = new SubscribersService(session.organization._id, session.environment._id);
     subscriber = await subscriberService.createSubscriber();
     novuClient = initNovuClassSdk(session);
   });
 
-  it('should fetch existing messages', async function () {
+  it('should fetch existing messages', async () => {
     const subscriber2 = await subscriberService.createSubscriber();
+
     await novuClient.trigger({
-      name: template.triggers[0].identifier,
+      workflowId: template.triggers[0].identifier,
       to: [
         { subscriberId: subscriber.subscriberId, email: 'gg@ff.com' },
         { subscriberId: subscriber2.subscriberId, email: 'john@doe.com' },
@@ -35,7 +38,7 @@ describe('Get Message - /messages (GET)', function () {
       },
     });
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForJobCompletion(template._id);
 
     let response = await novuClient.messages.retrieve({});
     expect(response.result.data.length).to.be.equal(4);
@@ -47,7 +50,7 @@ describe('Get Message - /messages (GET)', function () {
     expect(response.result.data.length).to.be.equal(2);
   });
 
-  it('should fetch messages using transactionId filter', async function () {
+  it('should fetch messages using transactionId filter', async () => {
     const subscriber3 = await subscriberService.createSubscriber();
 
     const transactionId1 = '1566f9d0-6037-48c1-b356-42667921cadd';
@@ -55,18 +58,20 @@ describe('Get Message - /messages (GET)', function () {
 
     await triggerEventWithTransactionId(template.triggers[0].identifier, subscriber3.subscriberId, transactionId1);
     await triggerEventWithTransactionId(template.triggers[0].identifier, subscriber3.subscriberId, transactionId2);
-    await triggerEventWithTransactionId(template.triggers[0].identifier, subscriber3.subscriberId, transactionId1);
 
-    await session.awaitRunningJobs(template._id);
+    await session.waitForWorkflowQueueCompletion();
+    await session.waitForSubscriberQueueCompletion();
+    await session.waitForStandardQueueCompletion();
+    await session.waitForJobCompletion(template._id);
 
     let response = await novuClient.messages.retrieve({ subscriberId: subscriber3.subscriberId });
-    // here we are expecting 6 messages because workflow has 2 steps in-app and email
-    expect(response.result.data.length).to.be.equal(6);
-    response = await novuClient.messages.retrieve({ transactionId: [transactionId1] });
     expect(response.result.data.length).to.be.equal(4);
 
+    response = await novuClient.messages.retrieve({ transactionId: [transactionId1] });
+    expect(response.result.data.length).to.be.equal(2);
+
     response = await novuClient.messages.retrieve({ transactionId: [transactionId1, transactionId2] });
-    expect(response.result.data.length).to.be.equal(6);
+    expect(response.result.data.length).to.be.equal(4);
 
     response = await novuClient.messages.retrieve({ transactionId: [transactionId2] });
     expect(response.result.data.length).to.be.equal(2);
@@ -78,7 +83,7 @@ describe('Get Message - /messages (GET)', function () {
     transactionId: string
   ) {
     return await novuClient.trigger({
-      name: templateIdentifier,
+      workflowId: templateIdentifier,
       to: [{ subscriberId, email: 'gg@ff.com' }],
       payload: {},
       transactionId,

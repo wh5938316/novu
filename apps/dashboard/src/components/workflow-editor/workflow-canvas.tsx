@@ -1,184 +1,68 @@
+import { EnvironmentEnum, EnvironmentTypeEnum, PermissionsEnum, ResourceOriginEnum } from '@novu/shared';
 import {
   Background,
   BackgroundVariant,
-  Controls,
-  Node,
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
   ViewportHelperFunctionOptions,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { useUser } from '@clerk/clerk-react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-
+import { useNavigate } from 'react-router-dom';
+import { InlineToast } from '@/components/primitives/inline-toast';
 import { useWorkflow } from '@/components/workflow-editor/workflow-provider';
 import { useEnvironment } from '@/context/environment/hooks';
-import { StepTypeEnum } from '@/utils/enums';
+import { useHasPermission } from '@/hooks/use-has-permission';
 import { buildRoute, ROUTES } from '@/utils/routes';
 import { Step } from '@/utils/types';
-import { useNavigate } from 'react-router-dom';
-import { NODE_HEIGHT, NODE_WIDTH } from './base-node';
-import { AddNodeEdge, AddNodeEdgeType } from './edges';
-import {
-  AddNode,
-  ChatNode,
-  CustomNode,
-  DelayNode,
-  DigestNode,
-  EmailNode,
-  InAppNode,
-  NodeData,
-  PushNode,
-  SmsNode,
-  TriggerNode,
-} from './nodes';
-import { getFirstBodyErrorMessage, getFirstControlsErrorMessage } from './step-utils';
-
-const nodeTypes = {
-  trigger: TriggerNode,
-  email: EmailNode,
-  sms: SmsNode,
-  in_app: InAppNode,
-  push: PushNode,
-  chat: ChatNode,
-  delay: DelayNode,
-  digest: DigestNode,
-  custom: CustomNode,
-  add: AddNode,
-};
-
-const edgeTypes = {
-  addNode: AddNodeEdge,
-};
+import { NODE_WIDTH } from './base-node';
+import { DragContext } from './drag-context';
+import { edgeTypes, nodeTypes } from './node-utils';
+import { useCanvasNodesEdges } from './use-canvas-nodes-edges';
+import { WorkflowChecklist } from './workflow-checklist';
 
 const panOnDrag = [1, 2];
 
-// y distance = node height + space between nodes
-const Y_DISTANCE = NODE_HEIGHT + 50;
-
-const mapStepToNodeContent = (step: Step): string | undefined => {
-  const controlValues = step.controls.values;
-
-  switch (step.type) {
-    case StepTypeEnum.TRIGGER:
-      return 'This step triggers this workflow';
-    case StepTypeEnum.EMAIL:
-      return 'Sends Email to your subscribers';
-    case StepTypeEnum.SMS:
-      return 'Sends SMS to your subscribers';
-    case StepTypeEnum.IN_APP:
-      return 'Sends In-App notification to your subscribers';
-    case StepTypeEnum.PUSH:
-      return 'Sends Push notification to your subscribers';
-    case StepTypeEnum.CHAT:
-      return 'Sends Chat message to your subscribers';
-    case StepTypeEnum.DELAY:
-      return `Delay for ${controlValues.amount} ${controlValues.unit}`;
-    case StepTypeEnum.DIGEST:
-      return 'Batches events into one coherent message before delivery to the subscriber.';
-    case StepTypeEnum.CUSTOM:
-      return 'Executes the business logic in your bridge application';
-    default:
-      return undefined;
-  }
-};
-
-const mapStepToNode = ({
-  addStepIndex,
-  previousPosition,
-  step,
+const WorkflowCanvasChild = ({
+  steps,
+  isTemplateStorePreview,
 }: {
-  addStepIndex: number;
-  previousPosition: { x: number; y: number };
-  step: Step;
-}): Node<NodeData, keyof typeof nodeTypes> => {
-  const content = mapStepToNodeContent(step);
-
-  const error = getFirstBodyErrorMessage(step.issues) || getFirstControlsErrorMessage(step.issues);
-
-  return {
-    id: crypto.randomUUID(),
-    position: { x: previousPosition.x, y: previousPosition.y + Y_DISTANCE },
-    data: {
-      name: step.name,
-      content,
-      addStepIndex,
-      stepSlug: step.slug,
-      error,
-    },
-    type: step.type,
-  };
-};
-
-const WorkflowCanvasChild = ({ steps }: { steps: Step[] }) => {
+  steps: Step[];
+  isTemplateStorePreview?: boolean;
+}) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const reactFlowInstance = useReactFlow();
   const { currentEnvironment } = useEnvironment();
-  const { workflow: currentWorkflow } = useWorkflow();
+  const { workflow: currentWorkflow, optimisticWorkflow } = useWorkflow();
   const navigate = useNavigate();
-
-  const [nodes, edges] = useMemo(() => {
-    const triggerNode = {
-      id: crypto.randomUUID(),
-      position: { x: 0, y: 0 },
-      data: {
-        workflowSlug: currentWorkflow?.slug ?? '',
-        environment: currentEnvironment?.slug ?? '',
-      },
-      type: 'trigger',
-    };
-    let previousPosition = triggerNode.position;
-
-    const createdNodes = steps?.map((step, index) => {
-      const node = mapStepToNode({
-        step,
-        previousPosition,
-        addStepIndex: index,
-      });
-      previousPosition = node.position;
-      return node;
-    });
-
-    const addNode: Node<NodeData> = {
-      id: crypto.randomUUID(),
-      position: { ...previousPosition, y: previousPosition.y + Y_DISTANCE },
-      data: {},
-      type: 'add',
-    };
-
-    const nodes = [triggerNode, ...createdNodes, addNode];
-    const edges = nodes.reduce<AddNodeEdgeType[]>((acc, node, index) => {
-      if (index === 0) {
-        return acc;
-      }
-
-      const parent = nodes[index - 1];
-      acc.push({
-        id: `edge-${parent.id}-${node.id}`,
-        source: parent.id,
-        sourceHandle: 'b',
-        targetHandle: 'a',
-        target: node.id,
-        type: 'addNode',
-        style: { stroke: 'hsl(var(--neutral-alpha-200))', strokeWidth: 2, strokeDasharray: 5 },
-        data: {
-          isLast: index === nodes.length - 1,
-          addStepIndex: index - 1,
-        },
-      });
-
-      return acc;
-    }, []);
-
-    return [nodes, edges];
-  }, [steps]);
+  const { user } = useUser();
+  const {
+    nodes,
+    edges,
+    draggedNodeId,
+    intersectingNodeId,
+    intersectingEdgeId,
+    onNodesChange,
+    onEdgesChange,
+    removeEdges,
+    forceUpdateNodesAndEdges,
+    onNodeDragStart,
+    onNodeDragMove,
+    onNodeDragEnd,
+  } = useCanvasNodesEdges({
+    steps,
+    isTemplateStorePreview,
+    workflow: optimisticWorkflow || currentWorkflow,
+  });
 
   const positionCanvas = useCallback(
     (options?: ViewportHelperFunctionOptions) => {
       const clientWidth = reactFlowWrapper.current?.clientWidth;
       const middle = clientWidth ? clientWidth / 2 - NODE_WIDTH / 2 : 0;
 
-      reactFlowInstance.setViewport({ x: middle, y: 50, zoom: 1 }, options);
+      reactFlowInstance.setViewport({ x: middle, y: 50, zoom: 0.99 }, options);
     },
     [reactFlowInstance]
   );
@@ -197,42 +81,152 @@ const WorkflowCanvasChild = ({ steps }: { steps: Step[] }) => {
     positionCanvas();
   }, [positionCanvas]);
 
+  const dragContextValue = useMemo(() => {
+    return {
+      onNodeDragStart,
+      onNodeDragMove,
+      onNodeDragEnd,
+      draggedNodeId,
+      intersectingNodeId,
+      intersectingEdgeId,
+      forceUpdateNodesAndEdges,
+      removeEdges,
+    };
+  }, [
+    onNodeDragStart,
+    onNodeDragMove,
+    onNodeDragEnd,
+    draggedNodeId,
+    intersectingNodeId,
+    intersectingEdgeId,
+    removeEdges,
+    forceUpdateNodesAndEdges,
+  ]);
+
   return (
-    <div ref={reactFlowWrapper} className="h-full w-full">
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        edgeTypes={edgeTypes}
-        deleteKeyCode={null}
-        maxZoom={1}
-        minZoom={1}
-        panOnScroll
-        selectionOnDrag
-        panOnDrag={panOnDrag}
-        onPaneClick={() => {
-          // unselect node if clicked on background
-          if (currentEnvironment?.slug && currentWorkflow?.slug) {
-            navigate(
-              buildRoute(ROUTES.EDIT_WORKFLOW, {
-                environmentSlug: currentEnvironment.slug,
-                workflowSlug: currentWorkflow.slug,
-              })
-            );
-          }
-        }}
-      >
-        <Controls showZoom={false} showInteractive={false} />
-        <Background variant={BackgroundVariant.Dots} gap={12} size={1} />
-      </ReactFlow>
-    </div>
+    <DragContext.Provider value={dragContextValue}>
+      {/* biome-ignore lint/correctness/useUniqueElementIds: used for the preview hover card */}
+      <div ref={reactFlowWrapper} className="h-full w-full" id="workflow-canvas-container">
+        <ReactFlow
+          nodes={nodes}
+          onNodesChange={onNodesChange}
+          edges={edges}
+          onEdgesChange={onEdgesChange}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          deleteKeyCode={null}
+          maxZoom={1}
+          minZoom={0.9}
+          panOnScroll
+          selectionOnDrag
+          panOnDrag={panOnDrag}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          onPaneClick={() => {
+            if (isTemplateStorePreview) {
+              return;
+            }
+
+            // unselect node if clicked on background
+            if (currentEnvironment?.slug && currentWorkflow?.slug) {
+              navigate(
+                buildRoute(ROUTES.EDIT_WORKFLOW, {
+                  environmentSlug: currentEnvironment.slug,
+                  workflowSlug: currentWorkflow.slug,
+                })
+              );
+            }
+          }}
+        >
+          <Background
+            variant={BackgroundVariant.Dots}
+            gap={24}
+            size={1}
+            bgColor="hsl(var(--bg-weak))"
+            color="hsl(var(--bg-muted))"
+          />
+        </ReactFlow>
+
+        {currentWorkflow &&
+          currentEnvironment?.name === EnvironmentEnum.DEVELOPMENT &&
+          currentWorkflow.origin === ResourceOriginEnum.NOVU_CLOUD &&
+          !user?.unsafeMetadata?.workflowChecklistCompleted && (
+            <WorkflowChecklist steps={steps} workflow={currentWorkflow} />
+          )}
+      </div>
+    </DragContext.Provider>
   );
 };
 
-export const WorkflowCanvas = ({ steps }: { steps: Step[] }) => {
+export const WorkflowCanvas = ({
+  steps,
+  isTemplateStorePreview,
+}: {
+  steps: Step[];
+  isTemplateStorePreview?: boolean;
+}) => {
+  const has = useHasPermission();
+  const { currentEnvironment, switchEnvironment, oppositeEnvironment } = useEnvironment();
+  const { workflow: currentWorkflow, optimisticWorkflow } = useWorkflow();
+  const navigate = useNavigate();
+  const hasPermission = has({ permission: PermissionsEnum.WORKFLOW_WRITE });
+  const showReadOnlyOverlay =
+    currentEnvironment && currentWorkflow && (!hasPermission || currentEnvironment?.type !== EnvironmentTypeEnum.DEV);
+
+  const handleSwitchToDevelopment = () => {
+    const developmentEnvironment = oppositeEnvironment?.name === 'Development' ? oppositeEnvironment : null;
+
+    if (developmentEnvironment?.slug && currentWorkflow?.workflowId) {
+      switchEnvironment(developmentEnvironment.slug);
+      navigate(
+        buildRoute(ROUTES.EDIT_WORKFLOW, {
+          environmentSlug: developmentEnvironment.slug,
+          workflowSlug: currentWorkflow.workflowId,
+        })
+      );
+    }
+  };
+
   return (
     <ReactFlowProvider>
-      <WorkflowCanvasChild steps={steps || []} />
+      <div className="relative h-full w-full">
+        <WorkflowCanvasChild
+          steps={(optimisticWorkflow || currentWorkflow)?.steps || steps || []}
+          isTemplateStorePreview={isTemplateStorePreview}
+        />
+
+        {showReadOnlyOverlay && (
+          <>
+            <div
+              className="border-warning/20 pointer-events-none absolute inset-x-0 top-0 border-t-[0.5px]"
+              style={{
+                position: 'absolute',
+                height: '100%',
+                background: 'linear-gradient(to bottom, hsl(var(--warning) / 0.08), transparent 4%)',
+                transition: 'border 0.3s ease-in-out, background 0.3s ease-in-out',
+              }}
+            />
+            <div className="absolute left-4 top-4 z-50">
+              <InlineToast
+                className="bg-warning/10 border shadow-md"
+                variant={'warning'}
+                description={
+                  hasPermission && currentEnvironment?.type !== EnvironmentTypeEnum.DEV
+                    ? 'Edit the workflow in your development environment.'
+                    : 'Content visible but locked for editing. Contact an admin for edit access.'
+                }
+                title="View-only:"
+                ctaLabel={
+                  hasPermission && currentEnvironment?.type !== EnvironmentTypeEnum.DEV
+                    ? 'Switch environment'
+                    : undefined
+                }
+                onCtaClick={handleSwitchToDevelopment}
+              />
+            </div>
+          </>
+        )}
+      </div>
     </ReactFlowProvider>
   );
 };

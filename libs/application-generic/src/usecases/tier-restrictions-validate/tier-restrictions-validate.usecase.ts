@@ -1,80 +1,99 @@
 import { Injectable } from '@nestjs/common';
-import { parseExpression as parseCronExpression } from 'cron-parser';
-
+import { CommunityOrganizationRepository, OrganizationEntity } from '@novu/dal';
 import {
   ApiServiceLevelEnum,
+  castUnitToDigestUnitEnum,
   DigestUnitEnum,
+  FeatureFlagsKeysEnum,
+  FeatureNameEnum,
+  getFeatureForTierAsNumber,
   StepTypeEnum,
 } from '@novu/shared';
-import { CommunityOrganizationRepository } from '@novu/dal';
-
-import { differenceInMilliseconds } from 'date-fns';
-
+import { parseExpression as parseCronExpression } from 'cron-parser';
+import { addYears, differenceInMilliseconds, isAfter } from 'date-fns';
+import { InstrumentUsecase } from '../../instrumentation';
+import { FeatureFlagsService } from '../../services';
+import { MIN_VALIDATION_LIMITS, SYSTEM_LIMITS } from '../../services/resource-validator.service';
 import { TierRestrictionsValidateCommand } from './tier-restrictions-validate.command';
 import {
   ErrorEnum,
   TierRestrictionsValidateResponse,
   TierValidationError,
 } from './tier-restrictions-validate.response';
-import { InstrumentUsecase } from '../../instrumentation';
-
-export const MILLISECONDS_IN_DAY = 24 * 60 * 60 * 1000;
-export const FREE_TIER_MAX_DELAY_DAYS = 30;
-export const BUSINESS_TIER_MAX_DELAY_DAYS = 90;
-export const MAX_DELAY_FREE_TIER =
-  FREE_TIER_MAX_DELAY_DAYS * MILLISECONDS_IN_DAY; // 30 days in milliseconds
-export const MAX_DELAY_BUSINESS_TIER =
-  BUSINESS_TIER_MAX_DELAY_DAYS * MILLISECONDS_IN_DAY; // 90 days in milliseconds
 
 @Injectable()
 export class TierRestrictionsValidateUsecase {
   constructor(
     private organizationRepository: CommunityOrganizationRepository,
+    private featureFlagsService: FeatureFlagsService
   ) {}
 
   @InstrumentUsecase()
-  async execute(
-    command: TierRestrictionsValidateCommand,
-  ): Promise<TierRestrictionsValidateResponse> {
-    if (![StepTypeEnum.DIGEST, StepTypeEnum.DELAY].includes(command.stepType)) {
+  async execute(command: TierRestrictionsValidateCommand): Promise<TierRestrictionsValidateResponse> {
+    const { stepType } = command;
+
+    if (!isDigestDelayOrThrottle(stepType)) {
       return [];
     }
 
-    const apiServiceLevel = (
-      await this.organizationRepository.findById(command.organizationId)
-    )?.apiServiceLevel;
+    const organization = await this.organizationRepository.findById(command.organizationId);
 
-    if (isCronExpression(command.cron)) {
-      // TODO: Implement cron expression validation
+    if (!organization) {
+      throw new Error(`Organization not found: ${command.organizationId}`);
+    }
 
-      /*
-       * const deferDurationMs = this.buildCronDeltaDeferDuration(command);
-       * const issue = buildIssue(
-       *   deferDurationMs,
-       *   getMaxDelay(apiServiceLevel),
-       *   ErrorEnum.TIER_LIMIT_EXCEEDED,
-       *   'cron',
-       * );
-       */
+    if (stepType !== StepTypeEnum.THROTTLE && isCronExpression(command.cron)) {
+      const maxDelayMs = await this.getMaxDelayInMs(
+        command,
+        organization,
+        stepType as StepTypeEnum.DELAY | StepTypeEnum.DIGEST
+      );
+
+      if (this.isCronDeltaDeferDurationExceededTier(command.cron, maxDelayMs)) {
+        return [
+          {
+            controlKey: 'cron',
+            error: ErrorEnum.TIER_LIMIT_EXCEEDED,
+            message:
+              `The maximum delay allowed is ${msToDays(maxDelayMs)} days. ` +
+              'Please contact our support team to discuss extending this limit for your use case.',
+          },
+        ];
+      }
 
       return [];
     }
 
-    if (isRegularDeferAction(command)) {
+    if (stepType !== StepTypeEnum.THROTTLE && isRegularDeferAction(command)) {
       const deferDurationMs = calculateDeferDuration(command);
 
-      const amountIssue = buildIssue(
-        deferDurationMs,
-        getMaxDelay(apiServiceLevel),
-        ErrorEnum.TIER_LIMIT_EXCEEDED,
-        'amount',
+      if (deferDurationMs < MIN_VALIDATION_LIMITS.DEFER_DURATION_MS) {
+        return [];
+      }
+
+      const maxDelayMs = await this.getMaxDelayInMs(
+        command,
+        organization,
+        stepType as StepTypeEnum.DELAY | StepTypeEnum.DIGEST
       );
-      const unitIssue = buildIssue(
-        deferDurationMs,
-        getMaxDelay(apiServiceLevel),
-        ErrorEnum.TIER_LIMIT_EXCEEDED,
-        'unit',
-      );
+
+      const amountIssue = buildIssue(deferDurationMs, maxDelayMs, ErrorEnum.TIER_LIMIT_EXCEEDED, 'amount');
+      const unitIssue = buildIssue(deferDurationMs, maxDelayMs, ErrorEnum.TIER_LIMIT_EXCEEDED, 'unit');
+
+      return [amountIssue, unitIssue].filter(Boolean);
+    }
+
+    if (stepType === StepTypeEnum.THROTTLE && isRegularThrottleAction(command)) {
+      const throttleDurationMs = calculateThrottleDuration(command);
+
+      if (throttleDurationMs < MIN_VALIDATION_LIMITS.DEFER_DURATION_MS) {
+        return [];
+      }
+
+      const maxThrottleMs = await this.getMaxThrottleInMs(command, organization);
+
+      const amountIssue = buildIssue(throttleDurationMs, maxThrottleMs, ErrorEnum.TIER_LIMIT_EXCEEDED, 'amount');
+      const unitIssue = buildIssue(throttleDurationMs, maxThrottleMs, ErrorEnum.TIER_LIMIT_EXCEEDED, 'unit');
 
       return [amountIssue, unitIssue].filter(Boolean);
     }
@@ -82,20 +101,86 @@ export class TierRestrictionsValidateUsecase {
     return [];
   }
 
-  private buildCronDeltaDeferDuration(
+  private async getMaxDelayInMs(
     command: TierRestrictionsValidateCommand,
-  ): number | null {
-    const cronExpression = parseCronExpression(command.cron);
-    const firstTime = cronExpression.next().toDate();
-    const secondTime = cronExpression.next().toDate();
+    organization: OrganizationEntity,
+    stepType: StepTypeEnum.DELAY | StepTypeEnum.DIGEST
+  ) {
+    const systemLimit = await this.featureFlagsService.getFlag({
+      key: FeatureFlagsKeysEnum.MAX_DEFER_DURATION_IN_MS_NUMBER,
+      defaultValue: SYSTEM_LIMITS.DEFER_DURATION_MS,
+      environment: { _id: command.environmentId },
+      organization,
+    });
 
-    return differenceInMilliseconds(firstTime, secondTime);
+    // If the system limit is not the default, we need to use it as the absolute limit for special cases instead of the tier limit
+    const isSpecialLimit = systemLimit !== SYSTEM_LIMITS.DEFER_DURATION_MS;
+    if (isSpecialLimit) {
+      return systemLimit;
+    }
+
+    const tierLimit = getFeatureForTierAsNumber(
+      stepType === StepTypeEnum.DELAY
+        ? FeatureNameEnum.PLATFORM_MAX_DELAY_DURATION
+        : FeatureNameEnum.PLATFORM_MAX_DIGEST_WINDOW_TIME,
+      organization.apiServiceLevel || ApiServiceLevelEnum.FREE,
+      true
+    );
+
+    return Math.min(systemLimit, tierLimit);
+  }
+
+  private async getMaxThrottleInMs(command: TierRestrictionsValidateCommand, organization: OrganizationEntity) {
+    const systemLimit = await this.featureFlagsService.getFlag({
+      key: FeatureFlagsKeysEnum.MAX_DEFER_DURATION_IN_MS_NUMBER,
+      defaultValue: SYSTEM_LIMITS.DEFER_DURATION_MS,
+      environment: { _id: command.environmentId },
+      organization,
+    });
+
+    // If the system limit is not the default, we need to use it as the absolute limit for special cases instead of the tier limit
+    const isSpecialLimit = systemLimit !== SYSTEM_LIMITS.DEFER_DURATION_MS;
+    if (isSpecialLimit) {
+      return systemLimit;
+    }
+
+    const tierLimit = getFeatureForTierAsNumber(
+      FeatureNameEnum.PLATFORM_MAX_THROTTLE_WINDOW_TIME,
+      organization.apiServiceLevel || ApiServiceLevelEnum.FREE,
+      true
+    );
+
+    return Math.min(systemLimit, tierLimit);
+  }
+
+  private isCronDeltaDeferDurationExceededTier(cron: string, maxDelayMs: number): boolean {
+    const cronExpression = parseCronExpression(cron);
+    const firstDate = cronExpression.next().toDate();
+    const twoYearsFromFirst = addYears(firstDate, 2);
+    let previousDate = firstDate;
+    const MAX_ITERATIONS = 50;
+
+    for (let i = 0; i < MAX_ITERATIONS; i += 1) {
+      const currentDate = cronExpression.next().toDate();
+
+      // If we've gone past two years from the first date, the intervals are safe
+      if (isAfter(currentDate, twoYearsFromFirst)) {
+        return false;
+      }
+
+      const deferDurationMs = differenceInMilliseconds(currentDate, previousDate);
+
+      if (deferDurationMs > maxDelayMs) {
+        return true;
+      }
+
+      previousDate = currentDate;
+    }
+
+    return false;
   }
 }
-
-function calculateDeferDuration(
-  command: TierRestrictionsValidateCommand,
-): number | null {
+function calculateDeferDuration(command: TierRestrictionsValidateCommand): number | null {
   if (command.deferDurationMs) {
     return command.deferDurationMs;
   }
@@ -140,32 +225,19 @@ function calculateMilliseconds(amount: number, unit: DigestUnitEnum): number {
 const isCronExpression = (cron: string) => {
   return !!cron;
 };
-
 const isRegularDeferAction = (command: TierRestrictionsValidateCommand) => {
-  return (
-    !!command.amount &&
-    isNumber(command.amount) &&
-    !!command.unit &&
-    isValidDigestUnit(command.unit)
-  );
-};
-
-function getMaxDelay(tier: ApiServiceLevelEnum): number {
-  if (
-    tier === ApiServiceLevelEnum.BUSINESS ||
-    tier === ApiServiceLevelEnum.ENTERPRISE
-  ) {
-    return MAX_DELAY_BUSINESS_TIER;
+  if (command.deferDurationMs) {
+    return true;
   }
 
-  return MAX_DELAY_FREE_TIER;
-}
+  return !!command.amount && isNumber(command.amount) && !!command.unit && isValidDigestUnit(command.unit);
+};
 
 function buildIssue(
   deferDurationMs: number,
   maxDelayMs: number,
   error: ErrorEnum,
-  controlKey: string,
+  controlKey: string
 ): TierValidationError | null {
   if (deferDurationMs > maxDelayMs) {
     return {
@@ -182,4 +254,27 @@ function buildIssue(
 
 function msToDays(ms: number): number {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
+function isDigestDelayOrThrottle(
+  stepType: StepTypeEnum
+): stepType is StepTypeEnum.DIGEST | StepTypeEnum.DELAY | StepTypeEnum.THROTTLE {
+  return [StepTypeEnum.DIGEST, StepTypeEnum.DELAY, StepTypeEnum.THROTTLE].includes(stepType);
+}
+
+function isRegularThrottleAction(command: TierRestrictionsValidateCommand) {
+  return command.amount && command.unit && !isCronExpression(command.cron);
+}
+
+function calculateThrottleDuration(command: TierRestrictionsValidateCommand): number | null {
+  if (!command.amount || !command.unit) {
+    return null;
+  }
+
+  const digestUnit = castUnitToDigestUnitEnum(command.unit);
+  if (!digestUnit) {
+    return null;
+  }
+
+  return calculateMilliseconds(command.amount, digestUnit);
 }

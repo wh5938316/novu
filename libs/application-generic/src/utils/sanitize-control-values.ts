@@ -1,48 +1,42 @@
-import { StepTypeEnum, TimeUnitEnum } from '@novu/shared';
+import { StepTypeEnum } from '@novu/shared';
 import { isEmpty } from 'lodash';
+import { PinoLogger } from '../logging';
 import {
-  InAppActionType,
-  InAppControlType,
-} from '../schemas/control/in-app-control.schema';
-import {
-  EmailControlType,
-  SmsControlType,
-  InAppRedirectType,
-  PushControlType,
-  DigestTimedControlType,
+  ChatControlType,
+  DelayControlType,
+  DelayRegularControlType,
+  DelayTimedControlType,
   DigestControlSchemaType,
   DigestRegularControlType,
+  DigestTimedControlType,
+  EmailControlType,
+  InAppRedirectType,
+  LayoutControlType,
   LookBackWindowType,
-  DelayControlType,
-  ChatControlType,
+  PushControlType,
+  SmsControlType,
 } from '../schemas/control';
-import { PinoLogger } from '../logging';
+import { InAppActionType, InAppControlType } from '../schemas/control/in-app-control.schema';
 
 // Cast input T_Type to trigger Ajv validation errors - possible undefined
-function sanitizeEmptyInput<T_Type>(
-  input: T_Type,
-  defaultValue: T_Type = undefined as unknown as T_Type,
-): T_Type {
+function sanitizeEmptyInput<T_Type>(input: T_Type, defaultValue: T_Type = undefined as unknown as T_Type): T_Type {
   return isEmpty(input) ? defaultValue : input;
 }
 
 export function sanitizeRedirect(redirect: InAppRedirectType | undefined) {
+  // TODO: There is a bug here, if the redirect doesn't contain both a url and a target it is removed from the new controlValues
   if (!redirect?.url || redirect.url.length === 0 || !redirect?.target) {
     return undefined;
   }
 
   return {
     url: redirect.url as string,
-    target: redirect.target as
-      | '_self'
-      | '_blank'
-      | '_parent'
-      | '_top'
-      | '_unfencedTop',
+    target: redirect.target as '_self' | '_blank' | '_parent' | '_top' | '_unfencedTop',
   };
 }
 
 function sanitizeAction(action: InAppActionType) {
+  // TODO: There is a bug here, if the action doesn't contain both a label and a redirect it is removed from the new controlValues
   if (!action?.label) {
     return undefined;
   }
@@ -55,7 +49,7 @@ function sanitizeAction(action: InAppActionType) {
 
 function sanitizeInApp(controlValues: InAppControlType) {
   const normalized: InAppControlType = {
-    subject: controlValues.subject,
+    subject: sanitizeEmptyInput<string>(controlValues.subject),
     body: sanitizeEmptyInput<string>(controlValues.body),
     avatar: sanitizeEmptyInput<string>(controlValues.avatar),
     primaryAction: undefined,
@@ -63,24 +57,19 @@ function sanitizeInApp(controlValues: InAppControlType) {
     redirect: undefined,
     data: controlValues.data,
     skip: controlValues.skip,
+    disableOutputSanitization: controlValues.disableOutputSanitization,
   };
 
   if (controlValues.primaryAction) {
-    normalized.primaryAction = sanitizeAction(
-      controlValues.primaryAction as InAppActionType,
-    );
+    normalized.primaryAction = sanitizeAction(controlValues.primaryAction as InAppActionType);
   }
 
   if (controlValues.secondaryAction) {
-    normalized.secondaryAction = sanitizeAction(
-      controlValues.secondaryAction as InAppActionType,
-    );
+    normalized.secondaryAction = sanitizeAction(controlValues.secondaryAction as InAppActionType);
   }
 
   if (controlValues.redirect) {
-    normalized.redirect = sanitizeRedirect(
-      controlValues.redirect as InAppRedirectType,
-    );
+    normalized.redirect = sanitizeRedirect(controlValues.redirect as InAppRedirectType);
   }
 
   return filterNullishValues(normalized);
@@ -93,9 +82,11 @@ function sanitizeEmail(controlValues: EmailControlType) {
   });
 
   const emailControls: EmailControlType = {
-    subject: controlValues.subject,
+    subject: sanitizeEmptyInput(controlValues.subject, ' '),
     body: sanitizeEmptyInput(controlValues.body, EMPTY_TIP_TAP),
     skip: controlValues.skip,
+    disableOutputSanitization: controlValues.disableOutputSanitization,
+    layoutId: controlValues.layoutId,
   };
 
   return filterNullishValues(emailControls);
@@ -132,18 +123,20 @@ function sanitizeChat(controlValues: ChatControlType) {
 function sanitizeDigest(controlValues: DigestControlSchemaType) {
   if (isTimedDigestControl(controlValues)) {
     const mappedValues: DigestTimedControlType = {
+      type: controlValues.type,
       cron: controlValues.cron,
       digestKey: controlValues.digestKey,
       skip: controlValues.skip,
+      extendToSchedule: controlValues.extendToSchedule,
     };
 
     return filterNullishValues(mappedValues);
   }
 
   if (isRegularDigestControl(controlValues)) {
-    const lookBackAmount = (controlValues.lookBackWindow as LookBackWindowType)
-      ?.amount;
+    const lookBackAmount = (controlValues.lookBackWindow as LookBackWindowType)?.amount;
     const mappedValues: DigestRegularControlType = {
+      type: controlValues.type,
       // Cast to trigger Ajv validation errors - possible undefined
       ...(parseAmount(controlValues.amount) as { amount?: number }),
       unit: controlValues.unit,
@@ -156,14 +149,14 @@ function sanitizeDigest(controlValues: DigestControlSchemaType) {
             unit: (controlValues.lookBackWindow as LookBackWindowType).unit,
           }
         : undefined,
+      extendToSchedule: controlValues.extendToSchedule,
     };
 
     return filterNullishValues(mappedValues);
   }
 
   const anyControlValues = controlValues as Record<string, unknown>;
-  const lookBackWindow = (anyControlValues.lookBackWindow as LookBackWindowType)
-    ?.amount;
+  const lookBackWindow = (anyControlValues.lookBackWindow as LookBackWindowType)?.amount;
 
   return filterNullishValues({
     // Cast to trigger Ajv validation errors - possible undefined
@@ -178,19 +171,45 @@ function sanitizeDigest(controlValues: DigestControlSchemaType) {
           unit: (anyControlValues.lookBackWindow as LookBackWindowType).unit,
         }
       : undefined,
+    extendToSchedule: anyControlValues.extendToSchedule,
   });
 }
 
 function sanitizeDelay(controlValues: DelayControlType) {
-  const mappedValues: DelayControlType = {
-    // Cast to trigger Ajv validation errors - possible undefined
-    ...(parseAmount(controlValues.amount) as { amount?: number }),
-    type: controlValues.type,
-    unit: controlValues.unit,
-    skip: controlValues.skip,
-  };
+  if (isTimedDelayControl(controlValues)) {
+    const mappedValues: DelayTimedControlType = {
+      type: controlValues.type,
+      cron: controlValues.cron,
+      skip: controlValues.skip,
+      extendToSchedule: controlValues.extendToSchedule,
+    };
 
-  return filterNullishValues(mappedValues);
+    return filterNullishValues(mappedValues);
+  }
+
+  if (isRegularDelayControl(controlValues)) {
+    const mappedValues: DelayRegularControlType = {
+      type: controlValues.type,
+      // Cast to trigger Ajv validation errors - possible undefined
+      ...(parseAmount(controlValues.amount) as { amount?: number }),
+      unit: controlValues.unit,
+      skip: controlValues.skip,
+      extendToSchedule: controlValues.extendToSchedule,
+    };
+
+    return filterNullishValues(mappedValues);
+  }
+
+  return filterNullishValues(controlValues);
+}
+
+function sanitizeLayout(controlValues: LayoutControlType) {
+  return {
+    email: filterNullishValues({
+      body: controlValues.email?.body,
+      editorType: controlValues.email?.editorType,
+    }),
+  };
 }
 
 function parseAmount(amount?: unknown) {
@@ -199,8 +218,7 @@ function parseAmount(amount?: unknown) {
       return {};
     }
 
-    const numberAmount =
-      typeof amount === 'string' ? parseInt(amount, 10) : amount;
+    const numberAmount = typeof amount === 'string' ? parseInt(amount, 10) : amount;
 
     return { amount: numberAmount };
   } catch (error) {
@@ -210,15 +228,13 @@ function parseAmount(amount?: unknown) {
 
 function filterNullishValues<T extends Record<string, unknown>>(obj: T): T {
   if (typeof obj === 'object' && obj !== null) {
-    return Object.fromEntries(
-      Object.entries(obj).filter(
-        ([_, value]) => value !== null && value !== undefined,
-      ),
-    ) as T;
+    return Object.fromEntries(Object.entries(obj).filter(([_, value]) => value !== null && value !== undefined)) as T;
   }
 
   return obj;
 }
+
+export type SanitizationType = StepTypeEnum | 'layout';
 
 /**
  * Sanitizes control values received from client-side forms into a clean minimal object.
@@ -243,7 +259,7 @@ function filterNullishValues<T extends Record<string, unknown>>(obj: T): T {
 export function dashboardSanitizeControlValues(
   logger: PinoLogger,
   controlValues: Record<string, unknown>,
-  stepType: StepTypeEnum | unknown,
+  type?: StepTypeEnum | 'layout'
 ): (Record<string, unknown> & { skip?: Record<string, unknown> }) | null {
   try {
     if (!controlValues) {
@@ -251,7 +267,7 @@ export function dashboardSanitizeControlValues(
     }
 
     let normalizedValues: Record<string, unknown>;
-    switch (stepType) {
+    switch (type) {
       case StepTypeEnum.IN_APP:
         normalizedValues = sanitizeInApp(controlValues as InAppControlType);
         break;
@@ -268,12 +284,13 @@ export function dashboardSanitizeControlValues(
         normalizedValues = sanitizeChat(controlValues as ChatControlType);
         break;
       case StepTypeEnum.DIGEST:
-        normalizedValues = sanitizeDigest(
-          controlValues as DigestControlSchemaType,
-        );
+        normalizedValues = sanitizeDigest(controlValues as DigestControlSchemaType);
         break;
       case StepTypeEnum.DELAY:
         normalizedValues = sanitizeDelay(controlValues as DelayControlType);
+        break;
+      case 'layout':
+        normalizedValues = sanitizeLayout(controlValues as LayoutControlType);
         break;
       default:
         normalizedValues = filterNullishValues(controlValues);
@@ -291,14 +308,18 @@ function isNumber(value: unknown): value is number {
   return !Number.isNaN(Number.parseInt(value as string, 10));
 }
 
-function isTimedDigestControl(
-  controlValues: unknown,
-): controlValues is DigestTimedControlType {
+function isTimedDigestControl(controlValues: unknown): controlValues is DigestTimedControlType {
   return !isEmpty((controlValues as DigestTimedControlType)?.cron);
 }
 
-function isRegularDigestControl(
-  controlValues: unknown,
-): controlValues is DigestRegularControlType {
+function isRegularDigestControl(controlValues: unknown): controlValues is DigestRegularControlType {
   return !isTimedDigestControl(controlValues);
+}
+
+function isTimedDelayControl(controlValues: unknown): controlValues is DelayTimedControlType {
+  return !isEmpty((controlValues as DelayTimedControlType)?.cron);
+}
+
+function isRegularDelayControl(controlValues: unknown): controlValues is DelayRegularControlType {
+  return !isTimedDelayControl(controlValues);
 }
